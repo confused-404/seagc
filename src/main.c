@@ -5,6 +5,7 @@
 
 #include "arena.h"
 #include "macros.h"
+#include "header.h"
 
 static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
@@ -103,35 +104,62 @@ void arena_destroy(Arena* arena) {
   arena->active_page = NULL;
 }
 
-void* arena_alloc(Arena* arena, size_t size) {
+void* arena_alloc_large(Arena* arena, Header* header, AllocLayout* alloc_layout) {
   Page* page;
-  void* result;
 
-  size = align_size(size);
+  page = arena_add_page(arena, alloc_layout->total_size, GC_PAGE_LARGE);
+  if (page == NULL) {
+    return NULL;
+  }
+
+  u8* top = page->top;
+
+  Header* h_dest = (Header*) top;
+  *h_dest = *header;
+
+  page->top += alloc_layout->total_size;
+  page->used = alloc_layout->total_size;
+  return (void*) (top + alloc_layout->header_size);
+}
+
+void* arena_alloc_normal(Arena* arena, Header* header, AllocLayout* alloc_layout) {
+  Page* page;
+
+  page = arena_get_active_page(arena, alloc_layout->total_size);
+  if (page == NULL) {
+    return NULL;
+  }
+
+  u8* top = page->top;
+
+  Header* h_dest = (Header*) top;
+  *h_dest = *header;
+
+  page->top += alloc_layout->total_size;
+  page->used += alloc_layout->total_size;
+  return (void*) (top + alloc_layout->header_size);
+}
+
+void* arena_alloc(Arena* arena, Header* header) {
+  size_t aligned_meta_size = align_size(sizeof(*header));
+  size_t aligned_payload_size = align_size(header->size);
+  size_t size = align_size(aligned_meta_size + aligned_payload_size);
+
+  AllocLayout alloc_layout = {
+    aligned_meta_size,
+    aligned_payload_size,
+    size
+  };
+
   if (size == 0) {
     size = GC_ALIGNMENT;
   }
 
   if (size > GC_LARGE_OBJECT_SIZE) {
-    page = arena_add_page(arena, size, GC_PAGE_LARGE);
-    if (page == NULL) {
-      return NULL;
-    }
-
-    page->top += size;
-    page->used = size;
-    return page->base;
+    return arena_alloc_large(arena, header, &alloc_layout);
+  } else {
+    return arena_alloc_normal(arena, header, &alloc_layout);
   }
-
-  page = arena_get_active_page(arena, size);
-  if (page == NULL) {
-    return NULL;
-  }
-
-  result = page->top;
-  page->top += size;
-  page->used += size;
-  return result;
 }
 
 bool arena_should_collect(const Arena* arena) {
@@ -148,7 +176,9 @@ int main(void) {
   for (i = 0; i < 1000; i++) {
     void* t;
 
-    t = arena_alloc(&arena, 1024);
+    Header h = { 1024 };
+
+    t = arena_alloc(&arena, &h);
     assert(t != NULL);
 
     if (i % 5 == 0) {

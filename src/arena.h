@@ -3,22 +3,8 @@
 
 #include "config.h"
 #include "types.h"
-
-typedef enum PageState {
-  GC_PAGE_FREE = 0,
-  GC_PAGE_ACTIVE,
-  GC_PAGE_FULL,
-  GC_PAGE_LARGE,
-} PageState;
-
-typedef struct Page {
-  u8* base;
-  u8* top;
-  u8* limit;
-  size_t used;
-  size_t capacity;
-  PageState state;
-} Page;
+#include "page.h"
+#include "header.h"
 
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
@@ -26,9 +12,17 @@ typedef struct Arena {
   Page* active_page;
 } Arena;
 
+typedef struct AllocLayout {
+  size_t header_size;
+  size_t payload_size;
+  size_t total_size;
+} AllocLayout;
+
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
-void* arena_alloc(Arena* arena, size_t size);
+void* arena_alloc(Arena* arena, Header* header);
+void* arena_alloc_large(Arena* arena, Header* header, AllocLayout* alloc_layout);
+void* arena_alloc_normal(Arena* arena, Header* header, AllocLayout* alloc_layout);
 bool arena_should_collect(const Arena* arena);
 
 #endif
