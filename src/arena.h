@@ -4,7 +4,7 @@
 #include "config.h"
 #include "types.h"
 #include "page.h"
-#include "header.h"
+#include "object_header.h"
 
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
@@ -14,17 +14,15 @@ typedef struct Arena {
 
 typedef struct AllocLayout {
   size_t header_size;
-  size_t payload_size;
   size_t total_size;
 } AllocLayout;
 
+AllocLayout arena_make_layout(size_t payload_size);
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
-void* arena_alloc(Arena* arena, Header* header);
-void* arena_alloc_large(Arena* arena, Header* header, AllocLayout* alloc_layout);
-void* arena_alloc_normal(Arena* arena, Header* header, AllocLayout* alloc_layout);
+void* arena_alloc(Arena* arena, size_t payload_size);
 bool arena_should_collect(const Arena* arena);
 
-Header* get_header_pointer(void* payload_pointer, AllocLayout* alloc_layout);
+ObjectHeader* get_header_pointer(void* payload_pointer, size_t header_size);
 
 #endif
