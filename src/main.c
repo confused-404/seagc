@@ -10,6 +10,35 @@ static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
 }
 
+static int arena_page_index(const Arena* arena, const Page* page) {
+  size_t i;
+
+  if (page == NULL) {
+    return -1;
+  }
+
+  for (i = 0; i < arena->page_count; i++) {
+    if (&arena->pages[i] == page) {
+      return (int) i;
+    }
+  }
+
+  return -1;
+}
+
+static void arena_dump_pages(const Arena* arena) {
+  size_t i;
+
+  printf("page_count=%zu active_page=%d\n",
+      arena->page_count, arena_page_index(arena, arena->active_page));
+
+  for (i = 0; i < arena->page_count; i++) {
+    const Page* page = &arena->pages[i];
+    printf("page[%zu] state=%d used=%zu capacity=%zu\n",
+        i, (int) page->state, page->used, page->capacity);
+  }
+}
+
 static Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
   Page* page;
 
@@ -111,20 +140,24 @@ bool arena_should_collect(const Arena* arena) {
 
 int main(void) {
   Arena arena;
-  void* a;
-  void* b;
-  void* c;
+
+  int i;
 
   arena_init(&arena);
 
-  a = arena_alloc(&arena, 24);
-  b = arena_alloc(&arena, 128);
-  c = arena_alloc(&arena, GC_LARGE_OBJECT_SIZE + 64);
+  for (i = 0; i < 1000; i++) {
+    void* t;
 
-  assert(a != NULL);
-  assert(b != NULL);
-  assert(c != NULL);
+    t = arena_alloc(&arena, 1024);
+    assert(t != NULL);
 
+    if (i % 5 == 0) {
+      printf("alloc[%d] ptr=%p page_count=%zu active_page=%d\n",
+          i, t, arena.page_count, arena_page_index(&arena, arena.active_page));
+    }
+  }
+
+  arena_dump_pages(&arena);
   printf("pages: %zu\n", arena.page_count);
   printf("active page state: %d\n", arena.active_page != NULL ? (int)arena.active_page->state : -1);
   printf("should collect soon: %s\n", arena_should_collect(&arena) ? "yes" : "no");
