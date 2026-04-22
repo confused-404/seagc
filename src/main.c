@@ -141,12 +141,12 @@ void* arena_alloc_normal(Arena* arena, Header* header, AllocLayout* alloc_layout
 }
 
 void* arena_alloc(Arena* arena, Header* header) {
-  size_t aligned_meta_size = align_size(sizeof(*header));
+  size_t aligned_header_size = align_size(sizeof(*header));
   size_t aligned_payload_size = align_size(header->size);
-  size_t size = align_size(aligned_meta_size + aligned_payload_size);
+  size_t size = align_size(aligned_header_size + aligned_payload_size);
 
   AllocLayout alloc_layout = {
-    aligned_meta_size,
+    aligned_header_size,
     aligned_payload_size,
     size
   };
@@ -162,28 +162,41 @@ void* arena_alloc(Arena* arena, Header* header) {
   }
 }
 
+Header* get_header_pointer(void* payload_pointer, AllocLayout* alloc_layout) {
+  return (Header*) ((u8*) payload_pointer - alloc_layout->header_size);
+}
+
 bool arena_should_collect(const Arena* arena) {
   return (GC_MAX_PAGES - arena->page_count) <= GC_GC_PAGE_WATERMARK;
 }
 
 int main(void) {
   Arena arena;
+  AllocLayout alloc_layout;
 
   int i;
 
   arena_init(&arena);
 
+  alloc_layout.header_size = align_size(sizeof(Header));
+  alloc_layout.payload_size = align_size(1024);
+  alloc_layout.total_size = align_size(alloc_layout.header_size + alloc_layout.payload_size);
+
   for (i = 0; i < 1000; i++) {
     void* t;
+    Header* recovered;
 
     Header h = { 1024 };
 
     t = arena_alloc(&arena, &h);
     assert(t != NULL);
+    recovered = get_header_pointer(t, &alloc_layout);
+    assert(recovered->size == h.size);
 
     if (i % 5 == 0) {
-      printf("alloc[%d] ptr=%p page_count=%zu active_page=%d\n",
-          i, t, arena.page_count, arena_page_index(&arena, arena.active_page));
+      printf("alloc[%d] ptr=%p header=%p stored_size=%zu page_count=%zu active_page=%d\n",
+          i, t, (void*) recovered, recovered->size, arena.page_count,
+          arena_page_index(&arena, arena.active_page));
     }
   }
 

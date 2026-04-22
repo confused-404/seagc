@@ -25,4 +25,6 @@ void* arena_alloc_large(Arena* arena, Header* header, AllocLayout* alloc_layout)
 void* arena_alloc_normal(Arena* arena, Header* header, AllocLayout* alloc_layout);
 bool arena_should_collect(const Arena* arena);
 
+Header* get_header_pointer(void* payload_pointer, AllocLayout* alloc_layout);
+
 #endif
