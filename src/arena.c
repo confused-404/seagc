@@ -35,11 +35,8 @@ static Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
     return NULL;
   }
 
-  page->top = page->base;
-  page->limit = page->base + capacity;
-  page->used = 0;
-  page->capacity = capacity;
-  page->state = state;
+  page_init(page, page->base, capacity, state);
+
   return page;
 }
 
@@ -72,13 +69,7 @@ void arena_destroy(Arena* arena) {
   size_t i;
 
   for (i = 0; i < arena->page_count; i++) {
-    free(arena->pages[i].base);
-    arena->pages[i].base = NULL;
-    arena->pages[i].top = NULL;
-    arena->pages[i].limit = NULL;
-    arena->pages[i].used = 0;
-    arena->pages[i].capacity = 0;
-    arena->pages[i].state = GC_PAGE_FREE;
+    page_release(&arena->pages[i]);
   }
 
   arena->page_count = 0;
