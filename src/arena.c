@@ -10,6 +10,12 @@ static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
 }
 
+static size_t get_page_offset(const Page* page, const ObjectHeader* hp) {
+  const u8* h_start = (const u8*) hp;
+
+  return (size_t) (h_start - (const u8*) page->base);
+}
+
 AllocLayout arena_make_layout(size_t payload_size) {
   AllocLayout alloc_layout;
 
@@ -157,9 +163,8 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
     return false;
   }
   const ObjectHeader* hp = get_header_pointer(payload_pointer, header_size);
-  const u8* h_start = (const u8*) hp;
 
-  size_t page_offset = (size_t) (h_start - (const u8*) page->base);
+  size_t page_offset = get_page_offset(page, hp);
 
   return livemap_mark(&page->livemap, page_offset, hp->size);
 }
@@ -167,3 +172,4 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size) {
   return (const ObjectHeader*) ((const u8*) payload_pointer - header_size);
 }
+
