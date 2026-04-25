@@ -32,34 +32,71 @@ static void arena_dump_pages(const Arena* arena) {
   }
 }
 
+static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
+  AllocLayout alloc_layout;
+  void* payload;
+  const ObjectHeader* header;
+  Page* owner;
+  size_t page_offset;
+  bool first_mark_result;
+  bool second_mark_result;
+
+  alloc_layout = arena_make_layout(payload_size);
+
+  payload = arena_alloc(arena, payload_size);
+  assert(payload != NULL);
+
+  header = get_header_pointer(payload, alloc_layout.header_size);
+  assert(header->size == payload_size);
+
+  owner = arena_find_page(arena, payload, alloc_layout.header_size);
+  assert(owner != NULL);
+  assert(owner == arena->active_page);
+
+  page_offset = (size_t) ((const u8*) header - owner->base);
+
+  first_mark_result = livemap_mark(&owner->livemap, page_offset, header->size);
+  assert(first_mark_result);
+  assert(livemap_is_live(&owner->livemap, page_offset));
+
+  second_mark_result = livemap_mark(&owner->livemap, page_offset, header->size);
+  assert(!second_mark_result);
+
+  assert(owner->livemap.live_objects == 1);
+  assert(owner->livemap.live_bytes == header->size);
+
+  printf("livemap_test payload=%p header=%p page_offset=%zu owner_page=%d live_objects=%zu live_bytes=%zu\n",
+      payload,
+      (const void*) header,
+      page_offset,
+      arena_page_index(arena, owner),
+      owner->livemap.live_objects,
+      owner->livemap.live_bytes);
+
+  livemap_reset(&owner->livemap);
+}
+
 int main(void) {
   Arena arena;
-  AllocLayout alloc_layout;
+  const size_t payload_size = 1024;
 
   int i;
 
   arena_init(&arena);
-
-  alloc_layout = arena_make_layout(1024);
+  test_page_livemap_mark(&arena, payload_size);
 
   for (i = 0; i < 1000; i++) {
     void* t;
-    const ObjectHeader* recovered;
-    const Page* owner;
 
-    t = arena_alloc(&arena, 1024);
+    t = arena_alloc(&arena, payload_size);
     assert(t != NULL);
-    recovered = get_header_pointer(t, alloc_layout.header_size);
-    assert(recovered->size == 1024);
-    owner = arena_find_page(&arena, t, alloc_layout.header_size);
-    assert(owner != NULL);
-    assert(owner == arena.active_page);
 
     if (i % 5 == 0) {
-      printf("alloc[%d] ptr=%p header=%p stored_size=%zu page_count=%zu active_page=%d owner_page=%d\n",
-          i, t, (const void*) recovered, recovered->size, arena.page_count,
-          arena_page_index(&arena, arena.active_page),
-          arena_page_index(&arena, owner));
+      printf("alloc[%d] ptr=%p page_count=%zu active_page=%d\n",
+          i,
+          t,
+          arena.page_count,
+          arena_page_index(&arena, arena.active_page));
     }
   }
 
