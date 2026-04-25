@@ -2,7 +2,9 @@
 #include <string.h>
 
 #include "arena.h"
+#include "livemap.h"
 #include "macros.h"
+#include "object_header.h"
 
 static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
@@ -145,6 +147,19 @@ Page* arena_find_page(Arena* arena, const void* payload_pointer, size_t header_s
   }
 
   return NULL;
+}
+
+bool arena_mark_object(Arena* arena, const void* payload_pointer, size_t header_size) {
+  Page* page = arena_find_page(arena, payload_pointer, header_size);
+  if (page == NULL) {
+    return false;
+  }
+  const ObjectHeader* hp = get_header_pointer(payload_pointer, header_size);
+  const u8* h_start = (const u8*) hp;
+
+  size_t page_offset = (size_t ) (h_start - (const u8*) page->base);
+
+  return livemap_mark(&page->livemap, page_offset, hp->size);
 }
 
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size) {

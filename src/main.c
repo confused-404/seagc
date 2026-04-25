@@ -55,11 +55,11 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
 
   page_offset = (size_t) ((const u8*) header - owner->base);
 
-  first_mark_result = livemap_mark(&owner->livemap, page_offset, header->size);
+  first_mark_result = arena_mark_object(arena, payload, alloc_layout.header_size);
   assert(first_mark_result);
   assert(livemap_is_live(&owner->livemap, page_offset));
 
-  second_mark_result = livemap_mark(&owner->livemap, page_offset, header->size);
+  second_mark_result = arena_mark_object(arena, payload, alloc_layout.header_size);
   assert(!second_mark_result);
 
   assert(owner->livemap.live_objects == 1);
