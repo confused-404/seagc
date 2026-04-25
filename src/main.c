@@ -49,17 +49,17 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   header = get_header_pointer(payload, alloc_layout.header_size);
   assert(header->size == payload_size);
 
-  owner = arena_find_page(arena, payload, alloc_layout.header_size);
+  owner = arena_find_page(arena, payload);
   assert(owner != NULL);
   assert(owner == arena->active_page);
 
   page_offset = (size_t) ((const u8*) header - owner->base);
 
-  first_mark_result = arena_mark_object(arena, payload, alloc_layout.header_size);
+  first_mark_result = arena_mark_object(arena, payload);
   assert(first_mark_result);
   assert(livemap_is_live(&owner->livemap, page_offset));
 
-  second_mark_result = arena_mark_object(arena, payload, alloc_layout.header_size);
+  second_mark_result = arena_mark_object(arena, payload);
   assert(!second_mark_result);
 
   assert(owner->livemap.live_objects == 1);
