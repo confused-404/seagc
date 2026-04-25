@@ -44,8 +44,8 @@ int main(void) {
 
   for (i = 0; i < 1000; i++) {
     void* t;
-    ObjectHeader* recovered;
-    Page* owner;
+    const ObjectHeader* recovered;
+    const Page* owner;
 
     t = arena_alloc(&arena, 1024);
     assert(t != NULL);
@@ -57,7 +57,7 @@ int main(void) {
 
     if (i % 5 == 0) {
       printf("alloc[%d] ptr=%p header=%p stored_size=%zu page_count=%zu active_page=%d owner_page=%d\n",
-          i, t, (void*) recovered, recovered->size, arena.page_count,
+          i, t, (const void*) recovered, recovered->size, arena.page_count,
           arena_page_index(&arena, arena.active_page),
           arena_page_index(&arena, owner));
     }

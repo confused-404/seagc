@@ -22,8 +22,8 @@ void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
 void* arena_alloc(Arena* arena, size_t payload_size);
 bool arena_should_collect(const Arena* arena);
-Page* arena_find_page(Arena* arena, void* payload_pointer, size_t header_size);
+const Page* arena_find_page(const Arena* arena, const void* payload_pointer, size_t header_size);
 
-ObjectHeader* get_header_pointer(void* payload_pointer, size_t header_size);
+const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size);
 
 #endif
