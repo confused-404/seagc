@@ -128,10 +128,25 @@ void* arena_alloc(Arena* arena, size_t payload_size) {
   return arena_alloc_normal(arena, &header, &alloc_layout);
 }
 
-ObjectHeader* get_header_pointer(void* payload_pointer, size_t header_size) {
-  return (ObjectHeader*) ((u8*) payload_pointer - header_size);
-}
-
 bool arena_should_collect(const Arena* arena) {
   return (GC_MAX_PAGES - arena->page_count) <= GC_GC_PAGE_WATERMARK;
+}
+
+Page* arena_find_page(Arena* arena, void* payload_pointer, size_t header_size) {
+  u8* hp = (u8*) get_header_pointer(payload_pointer, header_size);
+
+  for (size_t i = 0; i < arena->page_count; i++) {
+    u8* ps = arena->pages[i].base;
+    u8* pe = arena->pages[i].limit;
+
+    if (hp >= ps && hp < pe) {
+      return &arena->pages[i];
+    }
+  }
+
+  return NULL;
+}
+
+ObjectHeader* get_header_pointer(void* payload_pointer, size_t header_size) {
+  return (ObjectHeader*) ((u8*) payload_pointer - header_size);
 }
