@@ -132,7 +132,7 @@ bool arena_should_collect(const Arena* arena) {
   return (GC_MAX_PAGES - arena->page_count) <= GC_GC_PAGE_WATERMARK;
 }
 
-const Page* arena_find_page(const Arena* arena, const void* payload_pointer, size_t header_size) {
+Page* arena_find_page(Arena* arena, const void* payload_pointer, size_t header_size) {
   const u8* hp = (const u8*) get_header_pointer(payload_pointer, header_size);
 
   for (size_t i = 0; i < arena->page_count; i++) {
