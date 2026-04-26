@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "arena.h"
+#include "config.h"
 #include "livemap.h"
 #include "macros.h"
 #include "object_header.h"
@@ -16,10 +17,14 @@ static size_t get_page_offset(const Page* page, const ObjectHeader* hp) {
   return (size_t) (h_start - (const u8*) page->base);
 }
 
+static size_t get_header_size(void) {
+  return align_size(sizeof(ObjectHeader));
+}
+
 AllocLayout arena_make_layout(size_t payload_size) {
   AllocLayout alloc_layout;
 
-  alloc_layout.header_size = align_size(sizeof(ObjectHeader));
+  alloc_layout.header_size = get_header_size();
   alloc_layout.total_size = align_size(alloc_layout.header_size + align_size(payload_size));
 
   if (alloc_layout.total_size == 0) {
@@ -141,7 +146,7 @@ bool arena_should_collect(const Arena* arena) {
 }
 
 Page* arena_find_page(Arena* arena, const void* payload_pointer) {
-  const size_t header_size = ALIGN_UP(sizeof(ObjectHeader), GC_ALIGNMENT);
+  const size_t header_size = get_header_size();
   const u8* hp = (const u8*) get_header_pointer(payload_pointer, header_size);
 
   for (size_t i = 0; i < arena->page_count; i++) {
@@ -157,7 +162,7 @@ Page* arena_find_page(Arena* arena, const void* payload_pointer) {
 }
 
 bool arena_mark_object(Arena* arena, const void* payload_pointer) {
-  const size_t header_size = ALIGN_UP(sizeof(ObjectHeader), GC_ALIGNMENT);
+  const size_t header_size = get_header_size();
   Page* page = arena_find_page(arena, payload_pointer);
   if (page == NULL) {
     return false;
