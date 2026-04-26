@@ -48,6 +48,9 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
 
   header = get_header_pointer(payload, alloc_layout.header_size);
   assert(header->size == payload_size);
+  assert(header->trace != NULL);
+  assert(header->trace->pointer_count == 0);
+  assert(header->trace->pointer_offsets == NULL);
 
   owner = arena_find_page(arena, payload);
   assert(owner != NULL);

@@ -11,6 +11,11 @@ static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
 }
 
+static const TraceDescriptor gc_trace_none = {
+  .pointer_count = 0,
+  .pointer_offsets = NULL,
+};
+
 static size_t get_page_offset(const Page* page, const ObjectHeader* hp) {
   const u8* h_start = (const u8*) hp;
 
@@ -127,11 +132,12 @@ static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const 
   return (void*) (top + alloc_layout->header_size);
 }
 
-void* arena_alloc(Arena* arena, size_t payload_size) {
+void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace) {
   ObjectHeader header;
   AllocLayout alloc_layout;
 
   header.size = payload_size;
+  header.trace = trace != NULL ? trace : &gc_trace_none;
   alloc_layout = arena_make_layout(payload_size);
 
   if (alloc_layout.total_size > GC_LARGE_OBJECT_SIZE) {
@@ -139,6 +145,10 @@ void* arena_alloc(Arena* arena, size_t payload_size) {
   }
 
   return arena_alloc_normal(arena, &header, &alloc_layout);
+}
+
+void* arena_alloc(Arena* arena, size_t payload_size) {
+  return arena_alloc_traced(arena, payload_size, &gc_trace_none);
 }
 
 bool arena_should_collect(const Arena* arena) {
@@ -177,4 +187,3 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size) {
   return (const ObjectHeader*) ((const u8*) payload_pointer - header_size);
 }
-

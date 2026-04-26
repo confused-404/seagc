@@ -21,6 +21,7 @@ AllocLayout arena_make_layout(size_t payload_size);
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
 void* arena_alloc(Arena* arena, size_t payload_size);
+void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace);
 bool arena_should_collect(const Arena* arena);
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
 bool arena_mark_object(Arena* arena, const void* payload_pointer);
