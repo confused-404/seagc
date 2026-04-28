@@ -186,6 +186,22 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
   return livemap_mark(&page->livemap, page_offset, hp->total_size);
 }
 
+void arena_mark_roots(Arena* arena, const GCRootSet* roots) {
+  if (roots == NULL) {
+    return;
+  }
+
+  for (size_t i = 0; i < roots->count; i++) {
+    const GCRoot* root = &roots->roots[i];
+
+    if (root->slot == NULL || *root->slot == NULL) {
+      continue;
+    }
+
+    (void) arena_mark_object(arena, *root->slot);
+  }
+}
+
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data) {
   const size_t header_size = get_header_size();
 

@@ -17,6 +17,17 @@ typedef struct AllocLayout {
   size_t total_size;
 } AllocLayout;
 
+typedef void* GCPtr;
+
+typedef struct GCRoot {
+  GCPtr* slot;
+} GCRoot;
+
+typedef struct GCRootSet {
+  const GCRoot* roots;
+  size_t count;
+} GCRootSet;
+
 typedef void (*ArenaObjectVisitor)(
     Page* page,
     const ObjectHeader* header,
@@ -31,6 +42,7 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
 bool arena_should_collect(const Arena* arena);
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
 bool arena_mark_object(Arena* arena, const void* payload_pointer);
+void arena_mark_roots(Arena* arena, const GCRootSet* roots);
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data);
 
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size);

@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "arena.h"
+#include "macros.h"
 
 static int arena_page_index(const Arena* arena, const Page* page) {
   size_t i;
@@ -98,6 +99,46 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   livemap_reset(&owner->livemap);
 }
 
+static void test_root_mark(Arena* arena, size_t payload_size) {
+  AllocLayout alloc_layout;
+  GCPtr rooted;
+  const ObjectHeader* header;
+  Page* owner;
+  size_t page_offset;
+  GCRoot root_array[1];
+  GCRootSet roots;
+
+  alloc_layout = arena_make_layout(payload_size);
+
+  rooted = arena_alloc(arena, payload_size);
+  assert(rooted != NULL);
+
+  header = get_header_pointer(rooted, alloc_layout.header_size);
+  owner = arena_find_page(arena, rooted);
+  assert(owner != NULL);
+
+  page_offset = (size_t) ((const u8*) header - owner->base);
+  assert(!livemap_is_live(&owner->livemap, page_offset));
+
+  root_array[0].slot = &rooted;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  arena_mark_roots(arena, &roots);
+
+  assert(livemap_is_live(&owner->livemap, page_offset));
+  assert(owner->livemap.live_objects == 1);
+  assert(owner->livemap.live_bytes == header->total_size);
+
+  printf("root_mark_test root=%p owner_page=%d live_objects=%zu live_bytes=%zu\n",
+      rooted,
+      arena_page_index(arena, owner),
+      owner->livemap.live_objects,
+      owner->livemap.live_bytes);
+
+  livemap_reset(&owner->livemap);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -107,6 +148,7 @@ int main(void) {
 
   arena_init(&arena);
   test_page_livemap_mark(&arena, payload_size);
+  test_root_mark(&arena, payload_size);
 
   for (i = 0; i < 1000; i++) {
     void* t;
@@ -128,7 +170,7 @@ int main(void) {
   stats.objects = 0;
   stats.bytes = 0;
   arena_for_each_object(&arena, count_object, &stats);
-  assert(stats.objects == 1001);
+  assert(stats.objects == 1002);
   printf("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
 
   printf("pages: %zu\n", arena.page_count);
