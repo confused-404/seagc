@@ -6,6 +6,7 @@
 
 typedef struct ObjectHeader {
   size_t size;
+  size_t total_size;
   const TraceDescriptor* trace;
 } ObjectHeader;
 

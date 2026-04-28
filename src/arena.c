@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -136,9 +137,10 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
   ObjectHeader header;
   AllocLayout alloc_layout;
 
-  header.size = payload_size;
-  header.trace = trace != NULL ? trace : &gc_trace_none;
   alloc_layout = arena_make_layout(payload_size);
+  header.size = payload_size;
+  header.total_size = alloc_layout.total_size;
+  header.trace = trace != NULL ? trace : &gc_trace_none;
 
   if (alloc_layout.total_size > GC_LARGE_OBJECT_SIZE) {
     return arena_alloc_large(arena, &header, &alloc_layout);
@@ -181,7 +183,27 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
 
   size_t page_offset = get_page_offset(page, hp);
 
-  return livemap_mark(&page->livemap, page_offset, hp->size);
+  return livemap_mark(&page->livemap, page_offset, hp->total_size);
+}
+
+void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data) {
+  const size_t header_size = get_header_size();
+
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* page = &arena->pages[i];
+    u8* cursor = page->base;
+
+    while (cursor < page->top) {
+      const ObjectHeader* header = (const ObjectHeader*) cursor;
+      void* payload = (void*) (cursor + header_size);
+
+      assert(header->total_size >= header_size);
+      assert(cursor + header->total_size <= page->top);
+
+      visitor(page, header, payload, user_data);
+      cursor += header->total_size;
+    }
+  }
 }
 
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size) {

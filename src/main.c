@@ -32,6 +32,24 @@ static void arena_dump_pages(const Arena* arena) {
   }
 }
 
+typedef struct ObjectIterationStats {
+  size_t objects;
+  size_t bytes;
+} ObjectIterationStats;
+
+static void count_object(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
+  ObjectIterationStats* stats = (ObjectIterationStats*) user_data;
+  const size_t header_size = arena_make_layout(0).header_size;
+  const ObjectHeader* payload_header = get_header_pointer(payload, header_size);
+
+  assert(page != NULL);
+  assert(payload_header == header);
+  assert(header->total_size == arena_make_layout(header->size).total_size);
+
+  stats->objects++;
+  stats->bytes += header->total_size;
+}
+
 static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   AllocLayout alloc_layout;
   void* payload;
@@ -48,6 +66,7 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
 
   header = get_header_pointer(payload, alloc_layout.header_size);
   assert(header->size == payload_size);
+  assert(header->total_size == alloc_layout.total_size);
   assert(header->trace != NULL);
   assert(header->trace->pointer_count == 0);
   assert(header->trace->pointer_offsets == NULL);
@@ -66,7 +85,7 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   assert(!second_mark_result);
 
   assert(owner->livemap.live_objects == 1);
-  assert(owner->livemap.live_bytes == header->size);
+  assert(owner->livemap.live_bytes == header->total_size);
 
   printf("livemap_test payload=%p header=%p page_offset=%zu owner_page=%d live_objects=%zu live_bytes=%zu\n",
       payload,
@@ -82,6 +101,7 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
+  ObjectIterationStats stats;
 
   int i;
 
@@ -104,6 +124,13 @@ int main(void) {
   }
 
   arena_dump_pages(&arena);
+
+  stats.objects = 0;
+  stats.bytes = 0;
+  arena_for_each_object(&arena, count_object, &stats);
+  assert(stats.objects == 1001);
+  printf("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
+
   printf("pages: %zu\n", arena.page_count);
   printf("active page state: %d\n", arena.active_page != NULL ? (int)arena.active_page->state : -1);
   printf("should collect soon: %s\n", arena_should_collect(&arena) ? "yes" : "no");

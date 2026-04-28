@@ -17,6 +17,12 @@ typedef struct AllocLayout {
   size_t total_size;
 } AllocLayout;
 
+typedef void (*ArenaObjectVisitor)(
+    Page* page,
+    const ObjectHeader* header,
+    void* payload,
+    void* user_data);
+
 AllocLayout arena_make_layout(size_t payload_size);
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
@@ -25,6 +31,7 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
 bool arena_should_collect(const Arena* arena);
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
 bool arena_mark_object(Arena* arena, const void* payload_pointer);
+void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data);
 
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size);
 
