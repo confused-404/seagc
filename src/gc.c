@@ -158,3 +158,12 @@ void gc_sweep(Arena* arena) {
     }
   }
 }
+
+bool gc_collect(Arena* arena, const GCRootSet* roots) {
+  if (!gc_mark(arena, roots)) {
+    return false;
+  }
+
+  gc_sweep(arena);
+  return true;
+}

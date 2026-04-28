@@ -318,8 +318,7 @@ static void test_sweep_dead_normal_pages(void) {
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
-  assert(gc_mark(&arena, &roots));
-  gc_sweep(&arena);
+  assert(gc_collect(&arena, &roots));
 
   assert(live_page->state != GC_PAGE_FREE);
   assert(dead_page->state == GC_PAGE_FREE);
