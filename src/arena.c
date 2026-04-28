@@ -186,6 +186,35 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
   return livemap_mark(&page->livemap, page_offset, hp->total_size);
 }
 
+void arena_mark_object_fields(Arena* arena, const void* payload_pointer) {
+  const size_t header_size = get_header_size();
+  const ObjectHeader* hp;
+  const TraceDescriptor* trace;
+
+  if (payload_pointer == NULL) {
+    return;
+  }
+
+  if (arena_find_page(arena, payload_pointer) == NULL) {
+    return;
+  }
+
+  hp = get_header_pointer(payload_pointer, header_size);
+  trace = hp->trace;
+  if (trace == NULL) {
+    return;
+  }
+
+  for (size_t i = 0; i < trace->pointer_count; i++) {
+    const size_t offset = trace->pointer_offsets[i];
+    const GCPtr* field = (const GCPtr*) ((const u8*) payload_pointer + offset);
+
+    if (*field != NULL) {
+      (void) arena_mark_object(arena, *field);
+    }
+  }
+}
+
 void arena_mark_roots(Arena* arena, const GCRootSet* roots) {
   if (roots == NULL) {
     return;

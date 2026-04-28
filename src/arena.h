@@ -42,6 +42,7 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
 bool arena_should_collect(const Arena* arena);
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
 bool arena_mark_object(Arena* arena, const void* payload_pointer);
+void arena_mark_object_fields(Arena* arena, const void* payload_pointer);
 void arena_mark_roots(Arena* arena, const GCRootSet* roots);
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data);
 

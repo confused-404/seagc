@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 
 #include "arena.h"
@@ -37,6 +38,21 @@ typedef struct ObjectIterationStats {
   size_t objects;
   size_t bytes;
 } ObjectIterationStats;
+
+typedef struct Pair {
+  GCPtr left;
+  GCPtr right;
+} Pair;
+
+static const size_t pair_pointer_offsets[] = {
+  offsetof(Pair, left),
+  offsetof(Pair, right),
+};
+
+static const TraceDescriptor pair_trace = {
+  .pointer_count = ARRAY_LEN(pair_pointer_offsets),
+  .pointer_offsets = pair_pointer_offsets,
+};
 
 static void count_object(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
   ObjectIterationStats* stats = (ObjectIterationStats*) user_data;
@@ -139,6 +155,49 @@ static void test_root_mark(Arena* arena, size_t payload_size) {
   livemap_reset(&owner->livemap);
 }
 
+static void test_object_field_mark(Arena* arena, size_t payload_size) {
+  Pair* parent;
+  GCPtr child;
+  Page* parent_page;
+  Page* child_page;
+  const ObjectHeader* child_header;
+  size_t child_page_offset;
+
+  parent = (Pair*) arena_alloc_traced(arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+
+  child = arena_alloc(arena, payload_size);
+  assert(child != NULL);
+
+  parent->left = child;
+  parent->right = NULL;
+
+  parent_page = arena_find_page(arena, parent);
+  child_page = arena_find_page(arena, child);
+  assert(parent_page != NULL);
+  assert(child_page != NULL);
+
+  child_header = get_header_pointer(child, arena_make_layout(payload_size).header_size);
+  child_page_offset = (size_t) ((const u8*) child_header - child_page->base);
+  assert(!livemap_is_live(&child_page->livemap, child_page_offset));
+
+  assert(arena_mark_object(arena, parent));
+  arena_mark_object_fields(arena, parent);
+
+  assert(livemap_is_live(&child_page->livemap, child_page_offset));
+
+  printf("field_mark_test parent=%p child=%p parent_page=%d child_page=%d\n",
+      (void*) parent,
+      child,
+      arena_page_index(arena, parent_page),
+      arena_page_index(arena, child_page));
+
+  livemap_reset(&parent_page->livemap);
+  if (child_page != parent_page) {
+    livemap_reset(&child_page->livemap);
+  }
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -149,6 +208,7 @@ int main(void) {
   arena_init(&arena);
   test_page_livemap_mark(&arena, payload_size);
   test_root_mark(&arena, payload_size);
+  test_object_field_mark(&arena, payload_size);
 
   for (i = 0; i < 1000; i++) {
     void* t;
@@ -170,7 +230,7 @@ int main(void) {
   stats.objects = 0;
   stats.bytes = 0;
   arena_for_each_object(&arena, count_object, &stats);
-  assert(stats.objects == 1002);
+  assert(stats.objects == 1004);
   printf("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
 
   printf("pages: %zu\n", arena.page_count);
