@@ -71,6 +71,16 @@ static Page* arena_get_active_page(Arena* arena, size_t size) {
     arena->active_page = NULL;
   }
 
+  for (size_t i = 0; i < arena->page_count; i++) {
+    page = &arena->pages[i];
+
+    if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity == GC_PAGE_SIZE) {
+      page_reset(page, GC_PAGE_ACTIVE);
+      arena->active_page = page;
+      return page;
+    }
+  }
+
   page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
   if (page == NULL) {
     return NULL;

@@ -254,6 +254,40 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   gc_clear_marks(arena);
 }
 
+static void test_reuse_free_normal_page(void) {
+  Arena arena;
+  size_t original_page_count;
+  Page* free_page;
+  void* payload;
+
+  arena_init(&arena);
+
+  while (arena.page_count < 2) {
+    payload = arena_alloc(&arena, 1024);
+    assert(payload != NULL);
+  }
+
+  original_page_count = arena.page_count;
+  assert(original_page_count > 0);
+
+  free_page = &arena.pages[0];
+  assert(free_page->state == GC_PAGE_FULL);
+
+  page_reset(free_page, GC_PAGE_FREE);
+
+  while (arena.active_page != free_page) {
+    payload = arena_alloc(&arena, 1024);
+    assert(payload != NULL);
+    assert(arena.page_count == original_page_count);
+  }
+
+  printf("reuse_page_test page=%zu page_count=%zu\n",
+      (size_t) 0,
+      arena.page_count);
+
+  arena_destroy(&arena);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -266,6 +300,7 @@ int main(void) {
   test_root_mark(&arena, payload_size);
   test_object_field_mark(&arena, payload_size);
   test_transitive_root_mark(&arena, payload_size);
+  test_reuse_free_normal_page();
 
   for (i = 0; i < 1000; i++) {
     void* t;
