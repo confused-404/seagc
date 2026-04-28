@@ -3,9 +3,8 @@ CFLAGS = -std=c99 -O2 -Wextra -Wall -Werror -Wfloat-equal \
 					 -Wshadow -Wpointer-arith -Wcast-align -Wstrict-prototypes \
 					 -Wstrict-overflow=5 -Wwrite-strings \
 					 -Wcast-qual -Wswitch-default -Wswitch-enum -Wconversion \
-					 -Wunreachable-code \
-					 $(shell pkg-config --cflags glfw3)
-LDFLAGS = $(shell pkg-config --libs glfw3) -lm
+					 -Wunreachable-code
+LDFLAGS = -lm
 
 TARGET = seagc
 SRC = $(wildcard src/*.c)
