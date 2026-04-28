@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "arena.h"
+#include "gc.h"
 #include "macros.h"
 
 static int arena_page_index(const Arena* arena, const Page* page) {
@@ -140,7 +141,7 @@ static void test_root_mark(Arena* arena, size_t payload_size) {
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
-  assert(arena_mark_roots(arena, &roots));
+  assert(gc_mark_roots(arena, &roots));
 
   assert(livemap_is_live(&owner->livemap, page_offset));
   assert(owner->livemap.live_objects == 1);
@@ -241,7 +242,7 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
-  assert(arena_mark_roots(arena, &roots));
+  assert(gc_mark_roots(arena, &roots));
 
   assert(livemap_is_live(&child_page->livemap, child_page_offset));
 

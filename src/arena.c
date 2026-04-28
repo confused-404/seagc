@@ -27,50 +27,6 @@ static size_t get_header_size(void) {
   return align_size(sizeof(ObjectHeader));
 }
 
-typedef struct MarkWorklist {
-  GCPtr* items;
-  size_t count;
-  size_t capacity;
-} MarkWorklist;
-
-static void mark_worklist_destroy(MarkWorklist* worklist) {
-  free(worklist->items);
-  worklist->items = NULL;
-  worklist->count = 0;
-  worklist->capacity = 0;
-}
-
-static bool mark_worklist_push(MarkWorklist* worklist, GCPtr item) {
-  if (worklist->count == worklist->capacity) {
-    if (worklist->capacity > SIZE_MAX / 2) {
-      return false;
-    }
-
-    size_t new_capacity = worklist->capacity == 0 ? 16 : worklist->capacity * 2;
-
-    if (new_capacity > SIZE_MAX / sizeof(worklist->items[0])) {
-      return false;
-    }
-
-    GCPtr* new_items = (GCPtr*) realloc(worklist->items, new_capacity * sizeof(worklist->items[0]));
-
-    if (new_items == NULL) {
-      return false;
-    }
-
-    worklist->items = new_items;
-    worklist->capacity = new_capacity;
-  }
-
-  worklist->items[worklist->count++] = item;
-  return true;
-}
-
-static GCPtr mark_worklist_pop(MarkWorklist* worklist) {
-  assert(worklist->count > 0);
-  return worklist->items[--worklist->count];
-}
-
 AllocLayout arena_make_layout(size_t payload_size) {
   AllocLayout alloc_layout;
 
@@ -251,84 +207,12 @@ void arena_mark_object_fields(Arena* arena, const void* payload_pointer) {
 
   for (size_t i = 0; i < trace->pointer_count; i++) {
     const size_t offset = trace->pointer_offsets[i];
-    const GCPtr* field = (const GCPtr*) ((const u8*) payload_pointer + offset);
+    void* const* field = (void* const*) ((const u8*) payload_pointer + offset);
 
     if (*field != NULL) {
       (void) arena_mark_object(arena, *field);
     }
   }
-}
-
-static bool arena_mark_object_fields_into_worklist(
-    Arena* arena,
-    const void* payload_pointer,
-    MarkWorklist* worklist) {
-  const size_t header_size = get_header_size();
-  const ObjectHeader* hp;
-  const TraceDescriptor* trace;
-
-  if (payload_pointer == NULL) {
-    return true;
-  }
-
-  if (arena_find_page(arena, payload_pointer) == NULL) {
-    return true;
-  }
-
-  hp = get_header_pointer(payload_pointer, header_size);
-  trace = hp->trace;
-  if (trace == NULL) {
-    return true;
-  }
-
-  for (size_t i = 0; i < trace->pointer_count; i++) {
-    const size_t offset = trace->pointer_offsets[i];
-    const GCPtr* field = (const GCPtr*) ((const u8*) payload_pointer + offset);
-
-    if (*field != NULL && arena_mark_object(arena, *field)) {
-      if (!mark_worklist_push(worklist, *field)) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-bool arena_mark_roots(Arena* arena, const GCRootSet* roots) {
-  MarkWorklist worklist = {
-    .items = NULL,
-    .count = 0,
-    .capacity = 0,
-  };
-  bool ok = true;
-
-  if (roots == NULL) {
-    return true;
-  }
-
-  for (size_t i = 0; i < roots->count; i++) {
-    const GCRoot* root = &roots->roots[i];
-
-    if (root->slot == NULL || *root->slot == NULL) {
-      continue;
-    }
-
-    if (arena_mark_object(arena, *root->slot)) {
-      if (!mark_worklist_push(&worklist, *root->slot)) {
-        ok = false;
-        break;
-      }
-    }
-  }
-
-  while (ok && worklist.count > 0) {
-    GCPtr payload_pointer = mark_worklist_pop(&worklist);
-    ok = arena_mark_object_fields_into_worklist(arena, payload_pointer, &worklist);
-  }
-
-  mark_worklist_destroy(&worklist);
-  return ok;
 }
 
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data) {
