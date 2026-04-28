@@ -41,7 +41,7 @@ AllocLayout arena_make_layout(size_t payload_size) {
 }
 
 static Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
-  Page* page;
+  Page* page = NULL;
 
   if (arena->page_count >= GC_MAX_PAGES) {
     return NULL;
@@ -106,11 +106,26 @@ void arena_destroy(Arena* arena) {
 }
 
 static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const AllocLayout* alloc_layout) {
-  Page* page;
+  Page* page = NULL;
   u8* top;
   ObjectHeader* h_dest;
 
-  page = arena_add_page(arena, alloc_layout->total_size, GC_PAGE_LARGE);
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* candidate = &arena->pages[i];
+
+    if (candidate->state == GC_PAGE_FREE &&
+        candidate->base != NULL &&
+        candidate->capacity >= alloc_layout->total_size) {
+      page = candidate;
+      page_reset(page, GC_PAGE_LARGE);
+      break;
+    }
+  }
+
+  if (page == NULL) {
+    page = arena_add_page(arena, alloc_layout->total_size, GC_PAGE_LARGE);
+  }
+
   if (page == NULL) {
     return NULL;
   }

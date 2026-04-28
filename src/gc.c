@@ -142,6 +142,7 @@ void gc_sweep(Arena* arena) {
     switch (page->state) {
       case GC_PAGE_ACTIVE:
       case GC_PAGE_FULL:
+      case GC_PAGE_LARGE:
         if (page->livemap.live_objects == 0) {
           if (arena->active_page == page) {
             arena->active_page = NULL;
@@ -150,7 +151,6 @@ void gc_sweep(Arena* arena) {
         }
         break;
       case GC_PAGE_FREE:
-      case GC_PAGE_LARGE:
         break;
       default:
         assert(false);
