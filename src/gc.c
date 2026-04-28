@@ -134,3 +134,27 @@ bool gc_mark(Arena* arena, const GCRootSet* roots) {
   gc_clear_marks(arena);
   return gc_mark_roots(arena, roots);
 }
+
+void gc_sweep(Arena* arena) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* page = &arena->pages[i];
+
+    switch (page->state) {
+      case GC_PAGE_ACTIVE:
+      case GC_PAGE_FULL:
+        if (page->livemap.live_objects == 0) {
+          if (arena->active_page == page) {
+            arena->active_page = NULL;
+          }
+          page_reset(page, GC_PAGE_FREE);
+        }
+        break;
+      case GC_PAGE_FREE:
+      case GC_PAGE_LARGE:
+        break;
+      default:
+        assert(false);
+        break;
+    }
+  }
+}
