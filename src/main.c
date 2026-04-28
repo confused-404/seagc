@@ -141,7 +141,7 @@ static void test_root_mark(Arena* arena, size_t payload_size) {
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
-  assert(gc_mark_roots(arena, &roots));
+  assert(gc_mark(arena, &roots));
 
   assert(livemap_is_live(&owner->livemap, page_offset));
   assert(owner->livemap.live_objects == 1);
@@ -153,7 +153,7 @@ static void test_root_mark(Arena* arena, size_t payload_size) {
       owner->livemap.live_objects,
       owner->livemap.live_bytes);
 
-  livemap_reset(&owner->livemap);
+  gc_clear_marks(arena);
 }
 
 static void test_object_field_mark(Arena* arena, size_t payload_size) {
@@ -242,7 +242,7 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
-  assert(gc_mark_roots(arena, &roots));
+  assert(gc_mark(arena, &roots));
 
   assert(livemap_is_live(&child_page->livemap, child_page_offset));
 
@@ -251,13 +251,7 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
       (void*) parent,
       child);
 
-  livemap_reset(&grandparent_page->livemap);
-  if (parent_page != grandparent_page) {
-    livemap_reset(&parent_page->livemap);
-  }
-  if (child_page != grandparent_page && child_page != parent_page) {
-    livemap_reset(&child_page->livemap);
-  }
+  gc_clear_marks(arena);
 }
 
 int main(void) {

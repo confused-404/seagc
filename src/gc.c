@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "gc.h"
+#include "livemap.h"
 #include "macros.h"
 #include "object_header.h"
 
@@ -121,4 +122,15 @@ bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
 
   mark_worklist_destroy(&worklist);
   return ok;
+}
+
+void gc_clear_marks(Arena* arena) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    livemap_reset(&arena->pages[i].livemap);
+  }
+}
+
+bool gc_mark(Arena* arena, const GCRootSet* roots) {
+  gc_clear_marks(arena);
+  return gc_mark_roots(arena, roots);
 }
