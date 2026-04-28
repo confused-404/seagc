@@ -377,6 +377,44 @@ static void test_sweep_and_reuse_large_page(void) {
   arena_destroy(&arena);
 }
 
+static void test_gc_alloc_collects_on_failure(void) {
+  Arena arena;
+  GCPtr root;
+  GCRoot root_array[1];
+  GCRootSet roots;
+  Page* root_page;
+  void* payload;
+
+  arena_init(&arena);
+
+  root = arena_alloc(&arena, 1024);
+  assert(root != NULL);
+  root_page = arena_find_page(&arena, root);
+  assert(root_page != NULL);
+
+  root_array[0].slot = &root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  do {
+    payload = arena_alloc(&arena, 1024);
+  } while (payload != NULL);
+
+  assert(arena.page_count == GC_MAX_PAGES);
+
+  payload = gc_alloc(&arena, 1024, &roots);
+  assert(payload != NULL);
+  assert(root_page->state != GC_PAGE_FREE);
+  assert(arena.page_count == GC_MAX_PAGES);
+
+  printf("gc_alloc_retry_test page_count=%zu root_page=%d allocated_page=%d\n",
+      arena.page_count,
+      arena_page_index(&arena, root_page),
+      arena_page_index(&arena, arena_find_page(&arena, payload)));
+
+  arena_destroy(&arena);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -392,6 +430,7 @@ int main(void) {
   test_reuse_free_normal_page();
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
+  test_gc_alloc_collects_on_failure();
 
   for (i = 0; i < 1000; i++) {
     void* t;

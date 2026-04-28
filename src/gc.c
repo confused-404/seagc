@@ -12,6 +12,28 @@ typedef struct MarkWorklist {
   size_t capacity;
 } MarkWorklist;
 
+void* gc_alloc(Arena* arena, size_t payload_size, const GCRootSet* roots) {
+  return gc_alloc_traced(arena, payload_size, NULL, roots);
+}
+
+void* gc_alloc_traced(
+    Arena* arena,
+    size_t payload_size,
+    const TraceDescriptor* trace,
+    const GCRootSet* roots) {
+  void* payload = arena_alloc_traced(arena, payload_size, trace);
+
+  if (payload != NULL) {
+    return payload;
+  }
+
+  if (!gc_collect(arena, roots)) {
+    return NULL;
+  }
+
+  return arena_alloc_traced(arena, payload_size, trace);
+}
+
 static void mark_worklist_destroy(MarkWorklist* worklist) {
   free(worklist->items);
   worklist->items = NULL;
