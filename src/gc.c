@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "gc.h"
 #include "livemap.h"
@@ -112,6 +113,7 @@ static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_o
   Page* destination_page;
   ObjectHeader* new_header;
   u8* new_top;
+  size_t dest_offset;
 
   if (layout.total_size > source_page->capacity) {
     return false;
@@ -144,22 +146,21 @@ static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_o
   }
 
   new_top = destination_page->top;
-  new_header = (ObjectHeader*) new_top;
-  *new_header = *old_header;
-  destination_page->top += layout.total_size;
-  destination_page->used += layout.total_size;
-
-  {
-    size_t dest_offset = (size_t) (new_top - destination_page->base);
-
-    if (!livemap_mark(&destination_page->livemap, dest_offset, layout.total_size)) {
-      return false;
-    }
-  }
+  dest_offset = (size_t) (new_top - destination_page->base);
 
   if (!page_add_forwarding(source_page, old_offset, new_top + header_size)) {
     return false;
   }
+
+  if (!livemap_mark(&destination_page->livemap, dest_offset, layout.total_size)) {
+    source_page->forwarding_count--;
+    return false;
+  }
+
+  new_header = (ObjectHeader*) new_top;
+  memcpy(new_header, old_header, layout.total_size);
+  destination_page->top += layout.total_size;
+  destination_page->used += layout.total_size;
 
   *new_payload_out = (void*) (new_top + header_size);
   return true;
