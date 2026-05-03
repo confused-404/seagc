@@ -40,7 +40,7 @@ AllocLayout arena_make_layout(size_t payload_size) {
   return alloc_layout;
 }
 
-static Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
+Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
   Page* page = NULL;
 
   if (arena->page_count >= GC_MAX_PAGES) {

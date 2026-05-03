@@ -3,6 +3,13 @@
 #include "page.h"
 #include "livemap.h"
 
+static void page_clear_forwarding(Page* page) {
+  free(page->forwarding);
+  page->forwarding = NULL;
+  page->forwarding_count = 0;
+  page->forwarding_capacity = 0;
+}
+
 void page_init(Page *page, u8* base, size_t capacity, PageState state) {
   page->base = base;
   page->capacity = capacity;
@@ -15,9 +22,11 @@ void page_reset(Page *page, PageState state) {
   page->used = 0;
   page->state = state;
   livemap_reset(&page->livemap);
+  page_clear_forwarding(page);
 }
 
 void page_release(Page* page) {
+  page_clear_forwarding(page);
   free(page->base);
   page->base = NULL;
   page->top = NULL;

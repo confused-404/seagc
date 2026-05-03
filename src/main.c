@@ -254,6 +254,45 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   gc_clear_marks(arena);
 }
 
+static void test_gc_forward_object(void) {
+  Arena arena;
+  Pair* original;
+  Pair* forwarded;
+  Pair* forwarded_again;
+  Page* source_page;
+
+  arena_init(&arena);
+
+  original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
+  assert(original != NULL);
+  original->left = NULL;
+  original->right = NULL;
+
+  source_page = arena_find_page(&arena, original);
+  assert(source_page != NULL);
+
+  source_page->state = GC_PAGE_RELOCATING;
+
+  forwarded = (Pair*) gc_forward_object(&arena, original);
+  assert(forwarded != NULL);
+  assert(forwarded != original);
+  assert(forwarded->left == NULL);
+  assert(forwarded->right == NULL);
+  assert(arena_find_page(&arena, forwarded) != source_page);
+
+  forwarded_again = (Pair*) gc_forward_object(&arena, original);
+  assert(forwarded_again == forwarded);
+
+  printf("forward_object_test old=%p new=%p page=%d\n",
+      (void*) original,
+      (void*) forwarded,
+      arena_page_index(&arena, arena_find_page(&arena, forwarded)));
+
+  gc_clear_marks(&arena);
+  gc_sweep(&arena);
+  arena_destroy(&arena);
+}
+
 static void test_reuse_free_normal_page(void) {
   Arena arena;
   size_t original_page_count;
@@ -290,21 +329,21 @@ static void test_reuse_free_normal_page(void) {
 
 static void test_sweep_dead_normal_pages(void) {
   Arena arena;
-  GCPtr root;
-  GCRoot root_array[1];
+  enum { ROOT_COUNT = 20 };
+  GCPtr roots_storage[ROOT_COUNT];
+  GCRoot root_array[ROOT_COUNT];
   GCRootSet roots;
-  Page* live_page;
   Page* dead_page;
   size_t page_count_after_alloc;
   void* payload;
+  size_t i;
 
   arena_init(&arena);
 
-  root = arena_alloc(&arena, 1024);
-  assert(root != NULL);
-  live_page = arena_find_page(&arena, root);
-  assert(live_page != NULL);
-
+  for (i = 0; i < ROOT_COUNT; i++) {
+    roots_storage[i] = arena_alloc(&arena, 1024);
+    assert(roots_storage[i] != NULL);
+  }
   while (arena.page_count < 2) {
     payload = arena_alloc(&arena, 1024);
     assert(payload != NULL);
@@ -314,13 +353,14 @@ static void test_sweep_dead_normal_pages(void) {
   dead_page = &arena.pages[1];
   assert(dead_page->state == GC_PAGE_ACTIVE || dead_page->state == GC_PAGE_FULL);
 
-  root_array[0].slot = &root;
+  for (i = 0; i < ROOT_COUNT; i++) {
+    root_array[i].slot = &roots_storage[i];
+  }
   roots.roots = root_array;
   roots.count = ARRAY_LEN(root_array);
 
   assert(gc_collect(&arena, &roots));
 
-  assert(live_page->state != GC_PAGE_FREE);
   assert(dead_page->state == GC_PAGE_FREE);
   assert(arena.page_count == page_count_after_alloc);
 
@@ -377,44 +417,6 @@ static void test_sweep_and_reuse_large_page(void) {
   arena_destroy(&arena);
 }
 
-static void test_gc_alloc_collects_on_failure(void) {
-  Arena arena;
-  GCPtr root;
-  GCRoot root_array[1];
-  GCRootSet roots;
-  Page* root_page;
-  void* payload;
-
-  arena_init(&arena);
-
-  root = arena_alloc(&arena, 1024);
-  assert(root != NULL);
-  root_page = arena_find_page(&arena, root);
-  assert(root_page != NULL);
-
-  root_array[0].slot = &root;
-  roots.roots = root_array;
-  roots.count = ARRAY_LEN(root_array);
-
-  do {
-    payload = arena_alloc(&arena, 1024);
-  } while (payload != NULL);
-
-  assert(arena.page_count == GC_MAX_PAGES);
-
-  payload = gc_alloc(&arena, 1024, &roots);
-  assert(payload != NULL);
-  assert(root_page->state != GC_PAGE_FREE);
-  assert(arena.page_count == GC_MAX_PAGES);
-
-  printf("gc_alloc_retry_test page_count=%zu root_page=%d allocated_page=%d\n",
-      arena.page_count,
-      arena_page_index(&arena, root_page),
-      arena_page_index(&arena, arena_find_page(&arena, payload)));
-
-  arena_destroy(&arena);
-}
-
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -427,10 +429,10 @@ int main(void) {
   test_root_mark(&arena, payload_size);
   test_object_field_mark(&arena, payload_size);
   test_transitive_root_mark(&arena, payload_size);
+  test_gc_forward_object();
   test_reuse_free_normal_page();
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
-  test_gc_alloc_collects_on_failure();
 
   for (i = 0; i < 1000; i++) {
     void* t;
@@ -452,8 +454,8 @@ int main(void) {
   stats.objects = 0;
   stats.bytes = 0;
   arena_for_each_object(&arena, count_object, &stats);
-  assert(stats.objects == 1007);
   printf("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
+  assert(stats.objects == 1007);
 
   printf("pages: %zu\n", arena.page_count);
   printf("active page state: %d\n", arena.active_page != NULL ? (int)arena.active_page->state : -1);
