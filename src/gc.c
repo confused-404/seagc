@@ -245,6 +245,43 @@ static bool gc_page_is_sparse(Page* page) {
       page->livemap.live_bytes <= (page->capacity >> GC_RELOCATION_LIVE_RATIO_SHIFT);
 }
 
+static bool gc_verify_relocation(Arena* arena) {
+  const size_t header_size = arena_make_layout(0).header_size;
+
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* source_page = &arena->pages[i];
+
+    if (source_page->state != GC_PAGE_RELOCATING) {
+      continue;
+    }
+
+    for (size_t j = 0; j < source_page->forwarding_count; j++) {
+      const PageForwardingEntry* entry = &source_page->forwarding[j];
+      const ObjectHeader* old_header = (const ObjectHeader*) (source_page->base + entry->old_offset);
+      Page* destination_page = arena_find_page(arena, entry->new_payload);
+      const ObjectHeader* new_header;
+      size_t destination_offset;
+
+      if (destination_page == NULL || destination_page == source_page) {
+        return false;
+      }
+
+      new_header = get_header_pointer(entry->new_payload, header_size);
+      destination_offset = (size_t) ((const u8*) new_header - destination_page->base);
+
+      if (new_header->size != old_header->size) {
+        return false;
+      }
+
+      if (!livemap_is_live(&destination_page->livemap, destination_offset)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   (void) roots;
 
@@ -456,6 +493,10 @@ bool gc_collect(Arena* arena, const GCRootSet* roots) {
   gc_sweep(arena);
 
   if (!gc_evacuate_sparse_pages(arena, roots)) {
+    return false;
+  }
+
+  if (!gc_verify_relocation(arena)) {
     return false;
   }
 
