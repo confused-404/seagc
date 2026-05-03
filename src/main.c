@@ -293,6 +293,59 @@ static void test_gc_forward_if_relocating(void) {
   arena_destroy(&arena);
 }
 
+static void test_gc_collect_evacuates_sparse_page(void) {
+  Arena arena;
+  Pair* original_root;
+  GCPtr child;
+  Pair* moved_root;
+  GCRoot root_array[1];
+  GCRootSet roots;
+  Page* source_page;
+  Page* destination_page;
+
+  arena_init(&arena);
+
+  original_root = (Pair*) arena_alloc_traced(&arena, sizeof(*original_root), &pair_trace);
+  assert(original_root != NULL);
+
+  child = arena_alloc(&arena, 1024);
+  assert(child != NULL);
+
+  original_root->left = child;
+  original_root->right = NULL;
+
+  source_page = arena_find_page(&arena, original_root);
+  assert(source_page != NULL);
+  assert(source_page == arena_find_page(&arena, child));
+
+  root_array[0].slot = (GCPtr*) &original_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_collect(&arena, &roots));
+
+  moved_root = original_root;
+  assert(moved_root != NULL);
+  assert(moved_root != (Pair*) child);
+  assert(moved_root->left != NULL);
+  assert(moved_root->left != child);
+  assert(moved_root->right == NULL);
+
+  destination_page = arena_find_page(&arena, moved_root);
+  assert(destination_page != NULL);
+  assert(destination_page != source_page);
+  assert(arena_find_page(&arena, moved_root->left) == destination_page);
+  assert(source_page->state == GC_PAGE_FREE);
+
+  printf("collect_relocate_test old_page=%d new_page=%d root=%p child=%p\n",
+      arena_page_index(&arena, source_page),
+      arena_page_index(&arena, destination_page),
+      (void*) moved_root,
+      moved_root->left);
+
+  arena_destroy(&arena);
+}
+
 static void test_reuse_free_normal_page(void) {
   Arena arena;
   size_t original_page_count;
@@ -430,6 +483,7 @@ int main(void) {
   test_object_field_mark(&arena, payload_size);
   test_transitive_root_mark(&arena, payload_size);
   test_gc_forward_if_relocating();
+  test_gc_collect_evacuates_sparse_page();
   test_reuse_free_normal_page();
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
