@@ -32,6 +32,7 @@ typedef struct Page {
 
 void page_init(Page* page, u8* base, size_t capacity, PageState state);
 void page_reset(Page* page, PageState state);
+void page_clear_forwarding(Page* page);
 void page_release(Page* page);
 
 #endif

@@ -3,7 +3,7 @@
 #include "page.h"
 #include "livemap.h"
 
-static void page_clear_forwarding(Page* page) {
+void page_clear_forwarding(Page* page) {
   free(page->forwarding);
   page->forwarding = NULL;
   page->forwarding_count = 0;

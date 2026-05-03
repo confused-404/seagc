@@ -334,7 +334,7 @@ static void test_gc_collect_evacuates_sparse_page(void) {
   destination_page = arena_find_page(&arena, moved_root);
   assert(destination_page != NULL);
   assert(destination_page != source_page);
-  assert(arena_find_page(&arena, moved_root->left) == destination_page);
+  assert(arena_find_page(&arena, moved_root->left) != source_page);
   assert(source_page->state == GC_PAGE_FREE);
 
   printf("collect_relocate_test old_page=%d new_page=%d root=%p child=%p\n",

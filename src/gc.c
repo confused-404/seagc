@@ -106,7 +106,12 @@ static void gc_repair_object_fields(Arena* arena, void* payload_pointer, bool* o
   }
 }
 
-static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_offset, void** new_payload_out) {
+static bool gc_forward_live_object(
+    Arena* arena,
+    Page* source_page,
+    size_t old_offset,
+    void** new_payload_out,
+    Page** destination_page_out) {
   const size_t header_size = arena_make_layout(0).header_size;
   const ObjectHeader* old_header = (const ObjectHeader*) (source_page->base + old_offset);
   const AllocLayout layout = arena_make_layout(old_header->size);
@@ -120,23 +125,6 @@ static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_o
   }
 
   destination_page = arena_get_free_normal_page(arena, layout.total_size);
-  if (destination_page == NULL) {
-    for (size_t i = 0; i < arena->page_count; i++) {
-      Page* candidate = &arena->pages[i];
-
-      if (candidate->state == GC_PAGE_ACTIVE &&
-          candidate != source_page &&
-          candidate->capacity == GC_PAGE_SIZE) {
-        size_t remaining = (size_t) (candidate->limit - candidate->top);
-
-        if (remaining >= layout.total_size) {
-          destination_page = candidate;
-          break;
-        }
-      }
-    }
-  }
-
   if (destination_page == NULL) {
     destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
   }
@@ -163,6 +151,9 @@ static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_o
   destination_page->used += layout.total_size;
 
   *new_payload_out = (void*) (new_top + header_size);
+  if (destination_page_out != NULL) {
+    *destination_page_out = destination_page;
+  }
   return true;
 }
 
@@ -194,7 +185,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
     return object;
   }
 
-  if (!gc_forward_live_object(arena, source_page, old_offset, &new_payload)) {
+  if (!gc_forward_live_object(arena, source_page, old_offset, &new_payload, NULL)) {
     return NULL;
   }
 
@@ -252,10 +243,22 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page) {
     ObjectHeader* header = (ObjectHeader*) cursor;
     size_t old_offset = (size_t) (cursor - source_page->base);
     u8* new_payload;
+    Page* destination_page = NULL;
 
     if (livemap_is_live(&source_page->livemap, old_offset)) {
-      if (!gc_forward_live_object(arena, source_page, old_offset, (void**) &new_payload)) {
+      if (!gc_forward_live_object(arena, source_page, old_offset, (void**) &new_payload, &destination_page)) {
+        for (size_t i = 0; i < arena->page_count; i++) {
+          Page* page = &arena->pages[i];
+
+          if (page->state == GC_PAGE_ACTIVE &&
+              page->capacity == GC_PAGE_SIZE &&
+              page->used == 0) {
+            page_reset(page, GC_PAGE_FREE);
+          }
+        }
+
         source_page->state = GC_PAGE_FULL;
+        page_clear_forwarding(source_page);
         return false;
       }
     }
