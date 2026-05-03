@@ -75,6 +75,7 @@ static Page* arena_get_active_page(Arena* arena, size_t size) {
     page = &arena->pages[i];
 
     if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity == GC_PAGE_SIZE) {
+      assert(page->forwarding_count == 0);
       page_reset(page, GC_PAGE_ACTIVE);
       arena->active_page = page;
       return page;
