@@ -26,7 +26,7 @@ bool gc_mark(Arena* arena, const GCRootSet* roots);
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots);
 void gc_sweep(Arena* arena);
 bool gc_collect(Arena* arena, const GCRootSet* roots);
-void* gc_forward_object(Arena* arena, void* object);
+void* gc_forward_if_relocating(Arena* arena, void* object);
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots);
 
 #endif

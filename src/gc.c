@@ -78,7 +78,7 @@ static bool gc_repair_pointer(Arena* arena, GCPtr* slot) {
     return true;
   }
 
-  *slot = gc_forward_object(arena, *slot);
+  *slot = gc_forward_if_relocating(arena, *slot);
   return *slot != NULL;
 }
 
@@ -166,7 +166,7 @@ static bool gc_forward_live_object(Arena* arena, Page* source_page, size_t old_o
   return true;
 }
 
-void* gc_forward_object(Arena* arena, void* object) {
+void* gc_forward_if_relocating(Arena* arena, void* object) {
   Page* source_page;
   const size_t header_size = arena_make_layout(0).header_size;
   const ObjectHeader* hp;

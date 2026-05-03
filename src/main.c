@@ -254,7 +254,7 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   gc_clear_marks(arena);
 }
 
-static void test_gc_forward_object(void) {
+static void test_gc_forward_if_relocating(void) {
   Arena arena;
   Pair* original;
   Pair* forwarded;
@@ -273,14 +273,14 @@ static void test_gc_forward_object(void) {
 
   source_page->state = GC_PAGE_RELOCATING;
 
-  forwarded = (Pair*) gc_forward_object(&arena, original);
+  forwarded = (Pair*) gc_forward_if_relocating(&arena, original);
   assert(forwarded != NULL);
   assert(forwarded != original);
   assert(forwarded->left == NULL);
   assert(forwarded->right == NULL);
   assert(arena_find_page(&arena, forwarded) != source_page);
 
-  forwarded_again = (Pair*) gc_forward_object(&arena, original);
+  forwarded_again = (Pair*) gc_forward_if_relocating(&arena, original);
   assert(forwarded_again == forwarded);
 
   printf("forward_object_test old=%p new=%p page=%d\n",
@@ -429,7 +429,7 @@ int main(void) {
   test_root_mark(&arena, payload_size);
   test_object_field_mark(&arena, payload_size);
   test_transitive_root_mark(&arena, payload_size);
-  test_gc_forward_object();
+  test_gc_forward_if_relocating();
   test_reuse_free_normal_page();
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
