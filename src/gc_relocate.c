@@ -11,6 +11,12 @@ enum {
   GC_RELOCATION_LIVE_RATIO_SHIFT = 2,
 };
 
+typedef struct PageList {
+  Page** items;
+  size_t count;
+  size_t capacity;
+} PageList;
+
 static void gc_assert_relocation_page(const Page* page) {
   assert(page->state == GC_PAGE_RELOCATING);
 }
@@ -27,6 +33,38 @@ static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) 
   }
 
   return NULL;
+}
+
+static bool page_list_push(PageList* list, Page* page) {
+  Page** items;
+  size_t new_capacity;
+
+  for (size_t i = 0; i < list->count; i++) {
+    if (list->items[i] == page) {
+      return true;
+    }
+  }
+
+  if (list->count == list->capacity) {
+    new_capacity = list->capacity == 0 ? 8 : list->capacity * 2;
+    items = (Page**) realloc(list->items, new_capacity * sizeof(list->items[0]));
+    if (items == NULL) {
+      return false;
+    }
+
+    list->items = items;
+    list->capacity = new_capacity;
+  }
+
+  list->items[list->count++] = page;
+  return true;
+}
+
+static void page_list_reset(PageList* list) {
+  free(list->items);
+  list->items = NULL;
+  list->count = 0;
+  list->capacity = 0;
 }
 
 static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) {
@@ -87,6 +125,10 @@ static bool gc_forward_live_object(
   destination_page = arena_get_free_normal_page(arena, layout.total_size);
   if (destination_page == NULL) {
     destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
+  }
+
+  if (destination_page == NULL) {
+    return false;
   }
 
   if (destination_page->state != GC_PAGE_ACTIVE) {
@@ -154,6 +196,19 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
   return new_payload;
 }
 
+static void gc_cleanup_failed_relocation(Arena* arena, Page* source_page, PageList* destinations) {
+  (void) arena;
+
+  for (size_t i = 0; i < destinations->count; i++) {
+    Page* page = destinations->items[i];
+    page_reset(page, GC_PAGE_FREE);
+  }
+
+  source_page->state = GC_PAGE_FULL;
+  page_clear_forwarding(source_page);
+  page_list_reset(destinations);
+}
+
 static bool gc_page_is_sparse(Page* page) {
   if (page->state != GC_PAGE_ACTIVE && page->state != GC_PAGE_FULL) {
     return false;
@@ -164,6 +219,11 @@ static bool gc_page_is_sparse(Page* page) {
 }
 
 static bool gc_evacuate_page(Arena* arena, Page* source_page) {
+  PageList destinations = {
+    .items = NULL,
+    .count = 0,
+    .capacity = 0,
+  };
   source_page->state = GC_PAGE_RELOCATING;
   assert(source_page->forwarding_count == 0);
 
@@ -175,19 +235,12 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page) {
 
     if (livemap_is_live(&source_page->livemap, old_offset)) {
       if (!gc_forward_live_object(arena, source_page, old_offset, (void**) &new_payload, &destination_page)) {
-        for (size_t i = 0; i < arena->page_count; i++) {
-          Page* page = &arena->pages[i];
+        gc_cleanup_failed_relocation(arena, source_page, &destinations);
+        return false;
+      }
 
-          if (page->state == GC_PAGE_ACTIVE &&
-              page->capacity == GC_PAGE_SIZE &&
-              page->used == 0) {
-            gc_assert_nonrelocating_page(page);
-            page_reset(page, GC_PAGE_FREE);
-          }
-        }
-
-        source_page->state = GC_PAGE_FULL;
-        page_clear_forwarding(source_page);
+      if (destination_page != NULL && !page_list_push(&destinations, destination_page)) {
+        gc_cleanup_failed_relocation(arena, source_page, &destinations);
         return false;
       }
     }
@@ -195,6 +248,7 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page) {
     cursor += header->total_size;
   }
 
+  page_list_reset(&destinations);
   return true;
 }
 
