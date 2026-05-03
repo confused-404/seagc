@@ -245,6 +245,27 @@ static bool gc_page_is_sparse(Page* page) {
       page->livemap.live_bytes <= (page->capacity >> GC_RELOCATION_LIVE_RATIO_SHIFT);
 }
 
+static bool gc_evacuate_page(Arena* arena, Page* source_page) {
+  source_page->state = GC_PAGE_RELOCATING;
+
+  for (u8* cursor = source_page->base; cursor < source_page->top; ) {
+    ObjectHeader* header = (ObjectHeader*) cursor;
+    size_t old_offset = (size_t) (cursor - source_page->base);
+    u8* new_payload;
+
+    if (livemap_is_live(&source_page->livemap, old_offset)) {
+      if (!gc_forward_live_object(arena, source_page, old_offset, (void**) &new_payload)) {
+        source_page->state = GC_PAGE_FULL;
+        return false;
+      }
+    }
+
+    cursor += header->total_size;
+  }
+
+  return true;
+}
+
 static bool gc_verify_relocation(Arena* arena) {
   const size_t header_size = arena_make_layout(0).header_size;
 
@@ -294,21 +315,8 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
       continue;
     }
 
-    source_page->state = GC_PAGE_RELOCATING;
-
-    for (u8* cursor = source_page->base; cursor < source_page->top; ) {
-      ObjectHeader* header = (ObjectHeader*) cursor;
-      size_t old_offset = (size_t) (cursor - source_page->base);
-      u8* new_payload;
-
-      if (livemap_is_live(&source_page->livemap, old_offset)) {
-        if (!gc_forward_live_object(arena, source_page, old_offset, (void**) &new_payload)) {
-          source_page->state = GC_PAGE_FULL;
-          return false;
-        }
-      }
-
-      cursor += header->total_size;
+    if (!gc_evacuate_page(arena, source_page)) {
+      return false;
     }
   }
 
