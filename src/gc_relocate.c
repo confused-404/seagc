@@ -17,12 +17,27 @@ typedef struct PageList {
   size_t capacity;
 } PageList;
 
+typedef struct RelocationPlan {
+  const ObjectHeader* old_header;
+  AllocLayout layout;
+  size_t old_offset;
+} RelocationPlan;
+
 static void gc_assert_relocation_page(const Page* page) {
   assert(page->state == GC_PAGE_RELOCATING);
 }
 
 static void gc_assert_nonrelocating_page(const Page* page) {
   assert(page->state != GC_PAGE_RELOCATING);
+}
+
+static void gc_assert_relocation_destination_page(const Page* page, size_t min_capacity) {
+  assert(page != NULL);
+  assert(page->state == GC_PAGE_ACTIVE);
+  gc_assert_nonrelocating_page(page);
+  assert(page->base != NULL);
+  assert(page->capacity >= min_capacity);
+  assert(page->forwarding_count == 0);
 }
 
 static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) {
@@ -94,13 +109,47 @@ static Page* arena_get_free_normal_page(Arena* arena, size_t min_capacity) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
     if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity >= min_capacity) {
-      gc_assert_nonrelocating_page(page);
-      assert(page->forwarding_count == 0);
       page_reset(page, GC_PAGE_ACTIVE);
+      gc_assert_relocation_destination_page(page, min_capacity);
       return page;
     }
   }
   return NULL;
+}
+
+static bool gc_page_is_relocation_candidate(const Page* page) {
+  if (page->state != GC_PAGE_ACTIVE && page->state != GC_PAGE_FULL) {
+    return false;
+  }
+
+  return page->livemap.live_bytes > 0 &&
+      page->livemap.live_bytes <= (page->capacity >> GC_RELOCATION_LIVE_RATIO_SHIFT);
+}
+
+static RelocationPlan gc_make_relocation_plan(Page* source_page, size_t old_offset) {
+  RelocationPlan plan;
+
+  gc_assert_relocation_page(source_page);
+
+  plan.old_header = (const ObjectHeader*) (source_page->base + old_offset);
+  plan.layout = arena_make_layout(plan.old_header->size);
+  plan.old_offset = old_offset;
+  return plan;
+}
+
+static Page* gc_acquire_relocation_destination_page(Arena* arena, size_t min_capacity) {
+  Page* destination_page = arena_get_free_normal_page(arena, min_capacity);
+
+  if (destination_page == NULL) {
+    destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
+  }
+
+  if (destination_page == NULL) {
+    return NULL;
+  }
+
+  gc_assert_relocation_destination_page(destination_page, min_capacity);
+  return destination_page;
 }
 
 static bool gc_forward_live_object(
@@ -110,32 +159,20 @@ static bool gc_forward_live_object(
     void** new_payload_out,
     Page** destination_page_out) {
   const size_t header_size = arena_make_layout(0).header_size;
-  const ObjectHeader* old_header = (const ObjectHeader*) (source_page->base + old_offset);
-  const AllocLayout layout = arena_make_layout(old_header->size);
+  const RelocationPlan plan = gc_make_relocation_plan(source_page, old_offset);
   Page* destination_page;
   ObjectHeader* new_header;
   u8* new_top;
   size_t dest_offset;
 
-  if (layout.total_size > source_page->capacity) {
+  if (plan.layout.total_size > source_page->capacity) {
     return false;
   }
 
-  gc_assert_relocation_page(source_page);
-  destination_page = arena_get_free_normal_page(arena, layout.total_size);
-  if (destination_page == NULL) {
-    destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
-  }
-
+  destination_page = gc_acquire_relocation_destination_page(arena, plan.layout.total_size);
   if (destination_page == NULL) {
     return false;
   }
-
-  if (destination_page->state != GC_PAGE_ACTIVE) {
-    return false;
-  }
-  gc_assert_nonrelocating_page(destination_page);
-  assert(destination_page->forwarding_count == 0);
 
   new_top = destination_page->top;
   dest_offset = (size_t) (new_top - destination_page->base);
@@ -144,15 +181,15 @@ static bool gc_forward_live_object(
     return false;
   }
 
-  if (!livemap_mark(&destination_page->livemap, dest_offset, layout.total_size)) {
+  if (!livemap_mark(&destination_page->livemap, dest_offset, plan.layout.total_size)) {
     source_page->forwarding_count--;
     return false;
   }
 
   new_header = (ObjectHeader*) new_top;
-  memcpy(new_header, old_header, layout.total_size);
-  destination_page->top += layout.total_size;
-  destination_page->used += layout.total_size;
+  memcpy(new_header, plan.old_header, plan.layout.total_size);
+  destination_page->top += plan.layout.total_size;
+  destination_page->used += plan.layout.total_size;
 
   *new_payload_out = (void*) (new_top + header_size);
   if (destination_page_out != NULL) {
@@ -207,15 +244,6 @@ static void gc_cleanup_failed_relocation(Arena* arena, Page* source_page, PageLi
   source_page->state = GC_PAGE_FULL;
   page_clear_forwarding(source_page);
   page_list_reset(destinations);
-}
-
-static bool gc_page_is_sparse(Page* page) {
-  if (page->state != GC_PAGE_ACTIVE && page->state != GC_PAGE_FULL) {
-    return false;
-  }
-
-  return page->livemap.live_bytes > 0 &&
-      page->livemap.live_bytes <= (page->capacity >> GC_RELOCATION_LIVE_RATIO_SHIFT);
 }
 
 static bool gc_evacuate_page(Arena* arena, Page* source_page) {
@@ -308,7 +336,7 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   for (size_t i = 0; i < initial_page_count; i++) {
     Page* source_page = &arena->pages[i];
 
-    if (!gc_page_is_sparse(source_page)) {
+    if (!gc_page_is_relocation_candidate(source_page)) {
       continue;
     }
 
