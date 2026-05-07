@@ -287,6 +287,35 @@ bool gc_mark(Arena* arena, const GCRootSet* roots) {
   return gc_mark_roots(arena, roots);
 }
 
+static void gc_promote_surviving_pages(Arena* arena) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* page = &arena->pages[i];
+
+    switch (page->state) {
+      case GC_PAGE_ACTIVE:
+      case GC_PAGE_FULL:
+      case GC_PAGE_LARGE:
+        if (page->livemap.live_objects == 0) {
+          break;
+        }
+
+        if (page == arena->active_page && page->state == GC_PAGE_ACTIVE) {
+          page->state = GC_PAGE_FULL;
+          arena->active_page = NULL;
+        }
+
+        page_promote(page);
+        break;
+      case GC_PAGE_FREE:
+      case GC_PAGE_RELOCATING:
+        break;
+      default:
+        assert(false);
+        break;
+    }
+  }
+}
+
 void gc_sweep(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -349,5 +378,6 @@ bool gc_collect(Arena* arena, const GCRootSet* roots) {
 
   gc_assert_phase_invariants(arena, GC_PHASE_FINAL_SWEEP);
   gc_sweep(arena);
+  gc_promote_surviving_pages(arena);
   return true;
 }

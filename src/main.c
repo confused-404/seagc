@@ -472,6 +472,58 @@ static void test_sweep_and_reuse_large_page(void) {
   arena_destroy(&arena);
 }
 
+static void test_promote_surviving_page(void) {
+  Arena arena;
+  enum { ROOT_COUNT = 20 };
+  GCPtr rooted[ROOT_COUNT];
+  GCRoot root_array[ROOT_COUNT];
+  GCRootSet roots;
+  Page* owner_page;
+  void* next_payload;
+  Page* next_page;
+  size_t i;
+
+  arena_init(&arena);
+
+  for (i = 0; i < ROOT_COUNT; i++) {
+    rooted[i] = arena_alloc(&arena, 1024);
+    assert(rooted[i] != NULL);
+  }
+
+  owner_page = arena_find_page(&arena, rooted[0]);
+  assert(owner_page != NULL);
+  assert(owner_page->age == GC_PAGE_AGE_YOUNG);
+  assert(owner_page == arena.active_page);
+
+  for (i = 0; i < ROOT_COUNT; i++) {
+    root_array[i].slot = &rooted[i];
+  }
+  roots.roots = root_array;
+  roots.count = ROOT_COUNT;
+
+  assert(gc_collect(&arena, &roots));
+
+  assert(owner_page->age == GC_PAGE_AGE_OLD);
+  assert(owner_page->state == GC_PAGE_FULL);
+  assert(arena.active_page == NULL);
+
+  next_payload = arena_alloc(&arena, 1024);
+  assert(next_payload != NULL);
+
+  next_page = arena_find_page(&arena, next_payload);
+  assert(next_page != NULL);
+  assert(next_page != owner_page);
+  assert(next_page->age == GC_PAGE_AGE_YOUNG);
+
+  printf("promote_test old_page=%d new_page=%d old_age=%d new_age=%d\n",
+      arena_page_index(&arena, owner_page),
+      arena_page_index(&arena, next_page),
+      (int) owner_page->age,
+      (int) next_page->age);
+
+  arena_destroy(&arena);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -489,6 +541,7 @@ int main(void) {
   test_reuse_free_normal_page();
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
+  test_promote_surviving_page();
 
   for (i = 0; i < 1000; i++) {
     void* t;
