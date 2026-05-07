@@ -23,10 +23,63 @@ typedef struct MarkFieldVisitState {
   MarkWorklist* worklist;
 } MarkFieldVisitState;
 
+typedef enum GCCollectPhase {
+  GC_PHASE_MARK = 0,
+  GC_PHASE_SWEEP_DEAD,
+  GC_PHASE_EVACUATE,
+  GC_PHASE_VERIFY_FORWARDING,
+  GC_PHASE_REPAIR_ROOTS,
+  GC_PHASE_REPAIR_OBJECTS,
+  GC_PHASE_FINISH_RELOCATION,
+  GC_PHASE_FINAL_SWEEP,
+} GCCollectPhase;
+
 bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
 bool gc_repair_all_objects(Arena* arena);
 void gc_finish_relocation(Arena* arena);
+
+static bool gc_page_state_allows_relocation(const Page* page) {
+  return page->state == GC_PAGE_ACTIVE ||
+      page->state == GC_PAGE_FULL ||
+      page->state == GC_PAGE_RELOCATING ||
+      page->state == GC_PAGE_FREE ||
+      page->state == GC_PAGE_LARGE;
+}
+
+static void gc_assert_phase_invariants(const Arena* arena, GCCollectPhase phase) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    const Page* page = &arena->pages[i];
+
+    switch (phase) {
+      case GC_PHASE_MARK:
+      case GC_PHASE_SWEEP_DEAD:
+      case GC_PHASE_EVACUATE:
+        assert(gc_page_state_allows_relocation(page));
+        break;
+      case GC_PHASE_VERIFY_FORWARDING:
+      case GC_PHASE_REPAIR_ROOTS:
+      case GC_PHASE_REPAIR_OBJECTS:
+        assert(gc_page_state_allows_relocation(page));
+        if (page->state == GC_PAGE_RELOCATING) {
+          assert(page->forwarding_count == 0 || page->forwarding != NULL);
+        }
+        break;
+      case GC_PHASE_FINISH_RELOCATION:
+        assert(gc_page_state_allows_relocation(page));
+        if (page->state == GC_PAGE_RELOCATING) {
+          assert(page->forwarding_count == 0 || page->forwarding != NULL);
+        }
+        break;
+      case GC_PHASE_FINAL_SWEEP:
+        assert(page->state != GC_PAGE_RELOCATING);
+        break;
+      default:
+        assert(false);
+        break;
+    }
+  }
+}
 
 void* gc_alloc(Arena* arena, size_t payload_size, const GCRootSet* roots) {
   return gc_alloc_traced(arena, payload_size, NULL, roots);
@@ -263,29 +316,38 @@ void gc_sweep(Arena* arena) {
 }
 
 bool gc_collect(Arena* arena, const GCRootSet* roots) {
+  gc_assert_phase_invariants(arena, GC_PHASE_MARK);
   if (!gc_mark(arena, roots)) {
     return false;
   }
 
+  gc_assert_phase_invariants(arena, GC_PHASE_SWEEP_DEAD);
   gc_sweep(arena);
 
+  gc_assert_phase_invariants(arena, GC_PHASE_EVACUATE);
   if (!gc_evacuate_sparse_pages(arena, roots)) {
     return false;
   }
 
+  gc_assert_phase_invariants(arena, GC_PHASE_VERIFY_FORWARDING);
   if (!gc_verify_relocation(arena)) {
     return false;
   }
 
+  gc_assert_phase_invariants(arena, GC_PHASE_REPAIR_ROOTS);
   if (!gc_repair_roots(arena, roots)) {
     return false;
   }
 
+  gc_assert_phase_invariants(arena, GC_PHASE_REPAIR_OBJECTS);
   if (!gc_repair_all_objects(arena)) {
     return false;
   }
 
+  gc_assert_phase_invariants(arena, GC_PHASE_FINISH_RELOCATION);
   gc_finish_relocation(arena);
+
+  gc_assert_phase_invariants(arena, GC_PHASE_FINAL_SWEEP);
   gc_sweep(arena);
   return true;
 }
