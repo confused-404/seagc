@@ -12,6 +12,11 @@ typedef enum PageState {
   GC_PAGE_LARGE,
 } PageState;
 
+typedef enum PageAge {
+  GC_PAGE_AGE_YOUNG = 0,
+  GC_PAGE_AGE_OLD,
+} PageAge;
+
 typedef struct PageForwardingEntry {
   size_t old_offset;
   u8* new_payload;
@@ -24,15 +29,17 @@ typedef struct Page {
   size_t used;
   size_t capacity;
   PageState state;
+  PageAge age;
   LiveMap livemap;
   PageForwardingEntry* forwarding;
   size_t forwarding_count;
   size_t forwarding_capacity;
 } Page;
 
-void page_init(Page* page, u8* base, size_t capacity, PageState state);
-void page_reset(Page* page, PageState state);
+void page_init(Page* page, u8* base, size_t capacity, PageState state, PageAge age);
+void page_reset(Page* page, PageState state, PageAge age);
 void page_clear_forwarding(Page* page);
+void page_promote(Page* page);
 void page_release(Page* page);
 
 #endif

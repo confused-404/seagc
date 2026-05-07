@@ -40,7 +40,7 @@ AllocLayout arena_make_layout(size_t payload_size) {
   return alloc_layout;
 }
 
-Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
+Page* arena_add_page(Arena* arena, size_t capacity, PageState state, PageAge age) {
   Page* page = NULL;
 
   if (arena->page_count >= GC_MAX_PAGES) {
@@ -54,7 +54,7 @@ Page* arena_add_page(Arena* arena, size_t capacity, PageState state) {
     return NULL;
   }
 
-  page_init(page, page->base, capacity, state);
+  page_init(page, page->base, capacity, state, age);
 
   return page;
 }
@@ -76,13 +76,13 @@ static Page* arena_get_active_page(Arena* arena, size_t size) {
 
     if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity == GC_PAGE_SIZE) {
       assert(page->forwarding_count == 0);
-      page_reset(page, GC_PAGE_ACTIVE);
+      page_reset(page, GC_PAGE_ACTIVE, GC_PAGE_AGE_YOUNG);
       arena->active_page = page;
       return page;
     }
   }
 
-  page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
+  page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE, GC_PAGE_AGE_YOUNG);
   if (page == NULL) {
     return NULL;
   }
@@ -118,13 +118,13 @@ static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const A
         candidate->base != NULL &&
         candidate->capacity >= alloc_layout->total_size) {
       page = candidate;
-      page_reset(page, GC_PAGE_LARGE);
+      page_reset(page, GC_PAGE_LARGE, GC_PAGE_AGE_YOUNG);
       break;
     }
   }
 
   if (page == NULL) {
-    page = arena_add_page(arena, alloc_layout->total_size, GC_PAGE_LARGE);
+    page = arena_add_page(arena, alloc_layout->total_size, GC_PAGE_LARGE, GC_PAGE_AGE_YOUNG);
   }
 
   if (page == NULL) {

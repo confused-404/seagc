@@ -105,11 +105,11 @@ static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) 
   return true;
 }
 
-static Page* arena_get_free_normal_page(Arena* arena, size_t min_capacity) {
+static Page* arena_get_free_normal_page(Arena* arena, size_t min_capacity, PageAge age) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
     if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity >= min_capacity) {
-      page_reset(page, GC_PAGE_ACTIVE);
+      page_reset(page, GC_PAGE_ACTIVE, age);
       gc_assert_relocation_destination_page(page, min_capacity);
       return page;
     }
@@ -137,11 +137,11 @@ static RelocationPlan gc_make_relocation_plan(Page* source_page, size_t old_offs
   return plan;
 }
 
-static Page* gc_acquire_relocation_destination_page(Arena* arena, size_t min_capacity) {
-  Page* destination_page = arena_get_free_normal_page(arena, min_capacity);
+static Page* gc_acquire_relocation_destination_page(Arena* arena, size_t min_capacity, PageAge age) {
+  Page* destination_page = arena_get_free_normal_page(arena, min_capacity, age);
 
   if (destination_page == NULL) {
-    destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE);
+    destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE, age);
   }
 
   if (destination_page == NULL) {
@@ -169,7 +169,10 @@ static bool gc_forward_live_object(
     return false;
   }
 
-  destination_page = gc_acquire_relocation_destination_page(arena, plan.layout.total_size);
+  destination_page = gc_acquire_relocation_destination_page(
+      arena,
+      plan.layout.total_size,
+      source_page->age);
   if (destination_page == NULL) {
     return false;
   }
@@ -238,7 +241,7 @@ static void gc_cleanup_failed_relocation(Arena* arena, Page* source_page, PageLi
 
   for (size_t i = 0; i < destinations->count; i++) {
     Page* page = destinations->items[i];
-    page_reset(page, GC_PAGE_FREE);
+    page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
   }
 
   source_page->state = GC_PAGE_FULL;
@@ -323,7 +326,7 @@ void gc_finish_relocation(Arena* arena) {
 
     if (page->state == GC_PAGE_RELOCATING) {
       assert(page->forwarding_count == 0 || page->forwarding != NULL);
-      page_reset(page, GC_PAGE_FREE);
+      page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
     }
   }
 }

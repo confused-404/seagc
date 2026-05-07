@@ -30,8 +30,8 @@ static void arena_dump_pages(const Arena* arena) {
 
   for (i = 0; i < arena->page_count; i++) {
     const Page* page = &arena->pages[i];
-    printf("page[%zu] state=%d used=%zu capacity=%zu\n",
-        i, (int) page->state, page->used, page->capacity);
+    printf("page[%zu] state=%d age=%d used=%zu capacity=%zu\n",
+        i, (int) page->state, (int) page->age, page->used, page->capacity);
   }
 }
 
@@ -92,6 +92,7 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   owner = arena_find_page(arena, payload);
   assert(owner != NULL);
   assert(owner == arena->active_page);
+  assert(owner->age == GC_PAGE_AGE_YOUNG);
 
   page_offset = (size_t) ((const u8*) header - owner->base);
 
@@ -364,8 +365,9 @@ static void test_reuse_free_normal_page(void) {
 
   free_page = &arena.pages[0];
   assert(free_page->state == GC_PAGE_FULL);
+  assert(free_page->age == GC_PAGE_AGE_YOUNG);
 
-  page_reset(free_page, GC_PAGE_FREE);
+  page_reset(free_page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
 
   while (arena.active_page != free_page) {
     payload = arena_alloc(&arena, 1024);

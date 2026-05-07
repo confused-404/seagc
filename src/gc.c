@@ -303,7 +303,7 @@ void gc_sweep(Arena* arena) {
           if (page->state == GC_PAGE_RELOCATING) {
             assert(page->forwarding_count == 0 || page->forwarding != NULL);
           }
-          page_reset(page, GC_PAGE_FREE);
+          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
         }
         break;
       case GC_PAGE_FREE:
