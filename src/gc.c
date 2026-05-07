@@ -13,6 +13,16 @@ typedef struct MarkWorklist {
   size_t capacity;
 } MarkWorklist;
 
+typedef struct RepairVisitState {
+  Arena* arena;
+  bool ok;
+} RepairVisitState;
+
+typedef struct MarkFieldVisitState {
+  Arena* arena;
+  MarkWorklist* worklist;
+} MarkFieldVisitState;
+
 bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
 bool gc_repair_all_objects(Arena* arena);
@@ -89,40 +99,51 @@ static bool gc_repair_pointer(Arena* arena, GCPtr* slot) {
   return *slot != NULL;
 }
 
-static void gc_repair_object_fields(Arena* arena, void* payload_pointer, bool* ok) {
-  const size_t header_size = arena_make_layout(0).header_size;
-  const ObjectHeader* hp;
-  const TraceDescriptor* trace;
+static bool gc_repair_field_visitor(
+    const ObjectHeader* header,
+    void* payload,
+    void** field_slot,
+    void* user_data) {
+  RepairVisitState* state = (RepairVisitState*) user_data;
 
-  if (!*ok || payload_pointer == NULL) {
-    return;
-  }
+  (void) header;
+  (void) payload;
 
-  hp = get_header_pointer(payload_pointer, header_size);
-  trace = hp->trace;
-  if (trace == NULL) {
-    return;
-  }
-
-  for (size_t i = 0; i < trace->pointer_count; i++) {
-    GCPtr* field = (GCPtr*) ((u8*) payload_pointer + trace->pointer_offsets[i]);
-    *ok = gc_repair_pointer(arena, field);
-    if (!*ok) {
-      return;
-    }
-  }
+  return gc_repair_pointer(state->arena, (GCPtr*) field_slot);
 }
 
-typedef struct RepairVisitState {
-  Arena* arena;
-  bool ok;
-} RepairVisitState;
+static bool gc_mark_field_visitor(
+    const ObjectHeader* header,
+    void* payload,
+    void** field_slot,
+    void* user_data) {
+  MarkFieldVisitState* state = (MarkFieldVisitState*) user_data;
+  void* child = *field_slot;
+
+  (void) header;
+  (void) payload;
+
+  if (child != NULL && arena_mark_object(state->arena, child)) {
+    return mark_worklist_push(state->worklist, child);
+  }
+
+  return true;
+}
 
 static void gc_repair_visit(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
   RepairVisitState* state = (RepairVisitState*) user_data;
   (void) page;
   (void) header;
-  gc_repair_object_fields(state->arena, payload, &state->ok);
+
+  if (!state->ok) {
+    return;
+  }
+
+  state->ok = arena_visit_object_fields(
+      state->arena,
+      payload,
+      gc_repair_field_visitor,
+      state);
 }
 
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots) {
@@ -152,38 +173,18 @@ bool gc_repair_all_objects(Arena* arena) {
 
 static bool mark_object_fields_into_worklist(
     Arena* arena,
-    const void* payload_pointer,
+    void* payload_pointer,
     MarkWorklist* worklist) {
-  const size_t header_size = arena_make_layout(0).header_size;
-  const ObjectHeader* hp;
-  const TraceDescriptor* trace;
+  MarkFieldVisitState state = {
+    .arena = arena,
+    .worklist = worklist,
+  };
 
-  if (payload_pointer == NULL) {
-    return true;
-  }
-
-  if (arena_find_page(arena, payload_pointer) == NULL) {
-    return true;
-  }
-
-  hp = get_header_pointer(payload_pointer, header_size);
-  trace = hp->trace;
-  if (trace == NULL) {
-    return true;
-  }
-
-  for (size_t i = 0; i < trace->pointer_count; i++) {
-    const size_t offset = trace->pointer_offsets[i];
-    const GCPtr* field = (const GCPtr*) ((const u8*) payload_pointer + offset);
-
-    if (*field != NULL && arena_mark_object(arena, *field)) {
-      if (!mark_worklist_push(worklist, *field)) {
-        return false;
-      }
-    }
-  }
-
-  return true;
+  return arena_visit_object_fields(
+      arena,
+      payload_pointer,
+      gc_mark_field_visitor,
+      &state);
 }
 
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {

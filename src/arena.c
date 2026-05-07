@@ -212,33 +212,66 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
   return livemap_mark(&page->livemap, page_offset, hp->total_size);
 }
 
-void arena_mark_object_fields(Arena* arena, const void* payload_pointer) {
+bool arena_visit_object_fields(
+    Arena* arena,
+    void* payload_pointer,
+    ArenaObjectFieldVisitor visitor,
+    void* user_data) {
   const size_t header_size = get_header_size();
   const ObjectHeader* hp;
   const TraceDescriptor* trace;
 
+  assert(visitor != NULL);
+
   if (payload_pointer == NULL) {
-    return;
+    return true;
   }
 
   if (arena_find_page(arena, payload_pointer) == NULL) {
-    return;
+    return true;
   }
 
   hp = get_header_pointer(payload_pointer, header_size);
   trace = hp->trace;
   if (trace == NULL) {
-    return;
+    return true;
   }
 
   for (size_t i = 0; i < trace->pointer_count; i++) {
     const size_t offset = trace->pointer_offsets[i];
-    void* const* field = (void* const*) ((const u8*) payload_pointer + offset);
+    void** field = (void**) ((u8*) payload_pointer + offset);
 
-    if (*field != NULL) {
-      (void) arena_mark_object(arena, *field);
+    if (!visitor(hp, payload_pointer, field, user_data)) {
+      return false;
     }
   }
+
+  return true;
+}
+
+static bool arena_mark_field_visitor(
+    const ObjectHeader* header,
+    void* payload,
+    void** field_slot,
+    void* user_data) {
+  Arena* arena = (Arena*) user_data;
+
+  (void) header;
+  (void) payload;
+
+  if (*field_slot != NULL) {
+    (void) arena_mark_object(arena, *field_slot);
+  }
+
+  return true;
+}
+
+void arena_mark_object_fields(Arena* arena, void* payload_pointer) {
+  (void) arena_visit_object_fields(
+      arena,
+      payload_pointer,
+      arena_mark_field_visitor,
+      arena);
 }
 
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data) {
