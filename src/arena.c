@@ -59,23 +59,35 @@ Page* arena_add_page(Arena* arena, size_t capacity, PageState state, PageAge age
   return page;
 }
 
-static Page* arena_get_active_page(Arena* arena, size_t size) {
+static Page** arena_active_page_slot(Arena* arena, PageAge age) {
+  switch (age) {
+    case GC_PAGE_AGE_YOUNG:
+      return &arena->young_active_page;
+    case GC_PAGE_AGE_OLD:
+      return &arena->old_active_page;
+    default:
+      assert(false);
+      return &arena->young_active_page;
+  }
+}
+
+Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age) {
+  Page** active_page = arena_active_page_slot(arena, age);
   Page* page;
 
-  if (arena->active_page != NULL) {
-    if (arena->active_page->state != GC_PAGE_ACTIVE ||
-        arena->active_page->age != GC_PAGE_AGE_YOUNG) {
-      arena->active_page = NULL;
+  if (*active_page != NULL) {
+    if ((*active_page)->state != GC_PAGE_ACTIVE || (*active_page)->age != age) {
+      *active_page = NULL;
     }
   }
 
-  if (arena->active_page != NULL) {
-    size_t remaining = (size_t) (arena->active_page->limit - arena->active_page->top);
+  if (*active_page != NULL) {
+    size_t remaining = (size_t) ((*active_page)->limit - (*active_page)->top);
     if (remaining >= size) {
-      return arena->active_page;
+      return *active_page;
     }
-    arena->active_page->state = GC_PAGE_FULL;
-    arena->active_page = NULL;
+    (*active_page)->state = GC_PAGE_FULL;
+    *active_page = NULL;
   }
 
   for (size_t i = 0; i < arena->page_count; i++) {
@@ -83,18 +95,18 @@ static Page* arena_get_active_page(Arena* arena, size_t size) {
 
     if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity == GC_PAGE_SIZE) {
       assert(page->forwarding_count == 0);
-      page_reset(page, GC_PAGE_ACTIVE, GC_PAGE_AGE_YOUNG);
-      arena->active_page = page;
+      page_reset(page, GC_PAGE_ACTIVE, age);
+      *active_page = page;
       return page;
     }
   }
 
-  page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE, GC_PAGE_AGE_YOUNG);
+  page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE, age);
   if (page == NULL) {
     return NULL;
   }
 
-  arena->active_page = page;
+  *active_page = page;
   return page;
 }
 
@@ -114,7 +126,8 @@ void arena_destroy(Arena* arena) {
   arena->remembered_set.count = 0;
   arena->remembered_set.capacity = 0;
   arena->page_count = 0;
-  arena->active_page = NULL;
+  arena->young_active_page = NULL;
+  arena->old_active_page = NULL;
 }
 
 static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const AllocLayout* alloc_layout) {
@@ -156,7 +169,10 @@ static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const 
   u8* top;
   ObjectHeader* h_dest;
 
-  page = arena_get_active_page(arena, alloc_layout->total_size);
+  page = arena_get_active_page_for_age(
+      arena,
+      alloc_layout->total_size,
+      GC_PAGE_AGE_YOUNG);
   if (page == NULL) {
     return NULL;
   }

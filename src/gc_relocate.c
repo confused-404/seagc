@@ -107,18 +107,6 @@ static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) 
   return true;
 }
 
-static Page* arena_get_free_normal_page(Arena* arena, size_t min_capacity, PageAge age) {
-  for (size_t i = 0; i < arena->page_count; i++) {
-    Page* page = &arena->pages[i];
-    if (page->state == GC_PAGE_FREE && page->base != NULL && page->capacity >= min_capacity) {
-      page_reset(page, GC_PAGE_ACTIVE, age);
-      gc_assert_relocation_destination_page(page, min_capacity);
-      return page;
-    }
-  }
-  return NULL;
-}
-
 static bool gc_page_is_relocation_candidate(const Page* page) {
   if (page->state != GC_PAGE_ACTIVE && page->state != GC_PAGE_FULL) {
     return false;
@@ -155,11 +143,7 @@ static RelocationPlan gc_make_relocation_plan(
 }
 
 static Page* gc_acquire_relocation_destination_page(Arena* arena, size_t min_capacity, PageAge age) {
-  Page* destination_page = arena_get_free_normal_page(arena, min_capacity, age);
-
-  if (destination_page == NULL) {
-    destination_page = arena_add_page(arena, GC_PAGE_SIZE, GC_PAGE_ACTIVE, age);
-  }
+  Page* destination_page = arena_get_active_page_for_age(arena, min_capacity, age);
 
   if (destination_page == NULL) {
     return NULL;
@@ -381,8 +365,11 @@ void gc_finish_relocation(Arena* arena) {
 
     if (page->state == GC_PAGE_RELOCATING) {
       assert(page->forwarding_count == 0 || page->forwarding != NULL);
-      if (arena->active_page == page) {
-        arena->active_page = NULL;
+      if (arena->young_active_page == page) {
+        arena->young_active_page = NULL;
+      }
+      if (arena->old_active_page == page) {
+        arena->old_active_page = NULL;
       }
       page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
     }
@@ -430,8 +417,11 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
       continue;
     }
 
-    if (source_page == arena->active_page) {
-      arena->active_page = NULL;
+    if (source_page == arena->young_active_page) {
+      arena->young_active_page = NULL;
+    }
+    if (source_page == arena->old_active_page) {
+      arena->old_active_page = NULL;
     }
 
     if (!gc_evacuate_page(arena, source_page, true)) {

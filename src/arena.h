@@ -15,7 +15,8 @@ typedef struct RememberedSet {
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
   size_t page_count;
-  Page* active_page;
+  Page* young_active_page;
+  Page* old_active_page;
   RememberedSet remembered_set;
 } Arena;
 
@@ -40,6 +41,7 @@ AllocLayout arena_make_layout(size_t payload_size);
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
 Page* arena_add_page(Arena* arena, size_t capacity, PageState state, PageAge age);
+Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age);
 void* arena_alloc(Arena* arena, size_t payload_size);
 void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace);
 bool arena_should_collect(const Arena* arena);

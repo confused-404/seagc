@@ -554,9 +554,14 @@ static void gc_promote_surviving_pages(Arena* arena) {
           break;
         }
 
-        if (page == arena->active_page && page->state == GC_PAGE_ACTIVE) {
+        if (page == arena->young_active_page && page->state == GC_PAGE_ACTIVE) {
           page->state = GC_PAGE_FULL;
-          arena->active_page = NULL;
+          arena->young_active_page = NULL;
+        }
+
+        if (page == arena->old_active_page && page->state == GC_PAGE_ACTIVE) {
+          page->state = GC_PAGE_FULL;
+          arena->old_active_page = NULL;
         }
 
         page_promote(page);
@@ -581,8 +586,11 @@ void gc_sweep(Arena* arena) {
       case GC_PAGE_RELOCATING:
       case GC_PAGE_LARGE:
         if (page->livemap.live_objects == 0) {
-          if (arena->active_page == page) {
-            arena->active_page = NULL;
+          if (arena->young_active_page == page) {
+            arena->young_active_page = NULL;
+          }
+          if (arena->old_active_page == page) {
+            arena->old_active_page = NULL;
           }
           if (page->state == GC_PAGE_RELOCATING) {
             assert(page->forwarding_count == 0 || page->forwarding != NULL);
@@ -612,8 +620,11 @@ static void gc_sweep_dead_young(Arena* arena) {
       case GC_PAGE_FULL:
       case GC_PAGE_LARGE:
         if (page->livemap.live_objects == 0) {
-          if (arena->active_page == page) {
-            arena->active_page = NULL;
+          if (arena->young_active_page == page) {
+            arena->young_active_page = NULL;
+          }
+          if (arena->old_active_page == page) {
+            arena->old_active_page = NULL;
           }
           page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
         }
