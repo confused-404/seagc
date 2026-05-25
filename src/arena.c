@@ -63,6 +63,13 @@ static Page* arena_get_active_page(Arena* arena, size_t size) {
   Page* page;
 
   if (arena->active_page != NULL) {
+    if (arena->active_page->state != GC_PAGE_ACTIVE ||
+        arena->active_page->age != GC_PAGE_AGE_YOUNG) {
+      arena->active_page = NULL;
+    }
+  }
+
+  if (arena->active_page != NULL) {
     size_t remaining = (size_t) (arena->active_page->limit - arena->active_page->top);
     if (remaining >= size) {
       return arena->active_page;
@@ -102,6 +109,10 @@ void arena_destroy(Arena* arena) {
     page_release(&arena->pages[i]);
   }
 
+  free(arena->remembered_set.slots);
+  arena->remembered_set.slots = NULL;
+  arena->remembered_set.count = 0;
+  arena->remembered_set.capacity = 0;
   arena->page_count = 0;
   arena->active_page = NULL;
 }
@@ -190,6 +201,10 @@ Page* arena_find_page(Arena* arena, const void* payload_pointer) {
   for (size_t i = 0; i < arena->page_count; i++) {
     const u8* ps = arena->pages[i].base;
     const u8* pe = arena->pages[i].limit;
+
+    if (arena->pages[i].state == GC_PAGE_FREE) {
+      continue;
+    }
 
     if (hp >= ps && hp < pe) {
       return &arena->pages[i];

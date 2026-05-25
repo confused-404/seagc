@@ -326,6 +326,9 @@ void gc_finish_relocation(Arena* arena) {
 
     if (page->state == GC_PAGE_RELOCATING) {
       assert(page->forwarding_count == 0 || page->forwarding != NULL);
+      if (arena->active_page == page) {
+        arena->active_page = NULL;
+      }
       page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
     }
   }

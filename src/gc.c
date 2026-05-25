@@ -21,6 +21,7 @@ typedef struct RepairVisitState {
 typedef struct MarkFieldVisitState {
   Arena* arena;
   MarkWorklist* worklist;
+  bool young_only;
 } MarkFieldVisitState;
 
 typedef enum GCCollectPhase {
@@ -38,6 +39,87 @@ bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
 bool gc_repair_all_objects(Arena* arena);
 void gc_finish_relocation(Arena* arena);
+
+static bool gc_object_is_young(Arena* arena, const void* object) {
+  Page* page;
+
+  if (object == NULL) {
+    return false;
+  }
+
+  page = arena_find_page(arena, object);
+  return page != NULL && page->age == GC_PAGE_AGE_YOUNG;
+}
+
+static bool gc_object_is_old(Arena* arena, const void* object) {
+  Page* page;
+
+  if (object == NULL) {
+    return false;
+  }
+
+  page = arena_find_page(arena, object);
+  return page != NULL && page->age == GC_PAGE_AGE_OLD;
+}
+
+static void gc_remembered_set_clear(Arena* arena) {
+  arena->remembered_set.count = 0;
+}
+
+static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
+  RememberedSet* remembered_set = &arena->remembered_set;
+  void*** slots;
+  size_t new_capacity;
+
+  if (slot == NULL) {
+    return true;
+  }
+
+  for (size_t i = 0; i < remembered_set->count; i++) {
+    if (remembered_set->slots[i] == (void**) slot) {
+      return true;
+    }
+  }
+
+  if (remembered_set->count == remembered_set->capacity) {
+    if (remembered_set->capacity > SIZE_MAX / 2) {
+      return false;
+    }
+
+    new_capacity = remembered_set->capacity == 0 ? 16 : remembered_set->capacity * 2;
+    if (new_capacity > SIZE_MAX / sizeof(remembered_set->slots[0])) {
+      return false;
+    }
+
+    slots = (void***) realloc(
+        remembered_set->slots,
+        new_capacity * sizeof(remembered_set->slots[0]));
+    if (slots == NULL) {
+      return false;
+    }
+
+    remembered_set->slots = slots;
+    remembered_set->capacity = new_capacity;
+  }
+
+  remembered_set->slots[remembered_set->count++] = (void**) slot;
+  return true;
+}
+
+static void gc_prune_remembered_set(Arena* arena) {
+  RememberedSet* remembered_set = &arena->remembered_set;
+  size_t write = 0;
+
+  for (size_t read = 0; read < remembered_set->count; read++) {
+    void** slot = remembered_set->slots[read];
+
+    if (slot != NULL && *slot != NULL && gc_object_is_young(arena, *slot)) {
+      remembered_set->slots[write++] = slot;
+    }
+  }
+
+  remembered_set->count = write;
+}
 
 static bool gc_page_state_allows_relocation(const Page* page) {
   return page->state == GC_PAGE_ACTIVE ||
@@ -96,11 +178,30 @@ void* gc_alloc_traced(
     return payload;
   }
 
+  if (gc_collect_young(arena, roots)) {
+    payload = arena_alloc_traced(arena, payload_size, trace);
+    if (payload != NULL) {
+      return payload;
+    }
+  }
+
   if (!gc_collect(arena, roots)) {
     return NULL;
   }
 
   return arena_alloc_traced(arena, payload_size, trace);
+}
+
+bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
+  assert(slot != NULL);
+
+  *slot = value;
+
+  if (gc_object_is_old(arena, owner) && gc_object_is_young(arena, value)) {
+    return gc_remember_slot(arena, slot);
+  }
+
+  return true;
 }
 
 static void mark_worklist_destroy(MarkWorklist* worklist) {
@@ -176,6 +277,10 @@ static bool gc_mark_field_visitor(
   (void) header;
   (void) payload;
 
+  if (state->young_only && !gc_object_is_young(state->arena, child)) {
+    return true;
+  }
+
   if (child != NULL && arena_mark_object(state->arena, child)) {
     return mark_worklist_push(state->worklist, child);
   }
@@ -231,6 +336,7 @@ static bool mark_object_fields_into_worklist(
   MarkFieldVisitState state = {
     .arena = arena,
     .worklist = worklist,
+    .young_only = false,
   };
 
   return arena_visit_object_fields(
@@ -270,6 +376,77 @@ bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
   while (ok && worklist.count > 0) {
     GCPtr payload_pointer = mark_worklist_pop(&worklist);
     ok = mark_object_fields_into_worklist(arena, payload_pointer, &worklist);
+  }
+
+  mark_worklist_destroy(&worklist);
+  return ok;
+}
+
+static bool mark_young_object_fields_into_worklist(
+    Arena* arena,
+    void* payload_pointer,
+    MarkWorklist* worklist) {
+  MarkFieldVisitState state = {
+    .arena = arena,
+    .worklist = worklist,
+    .young_only = true,
+  };
+
+  return arena_visit_object_fields(
+      arena,
+      payload_pointer,
+      gc_mark_field_visitor,
+      &state);
+}
+
+static void gc_clear_young_marks(Arena* arena) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    if (arena->pages[i].age == GC_PAGE_AGE_YOUNG) {
+      livemap_reset(&arena->pages[i].livemap);
+    }
+  }
+}
+
+static bool gc_mark_young_roots(Arena* arena, const GCRootSet* roots) {
+  MarkWorklist worklist = {
+    .items = NULL,
+    .count = 0,
+    .capacity = 0,
+  };
+  bool ok = true;
+
+  if (roots != NULL) {
+    for (size_t i = 0; i < roots->count; i++) {
+      const GCRoot* root = &roots->roots[i];
+
+      if (root->slot == NULL || *root->slot == NULL || !gc_object_is_young(arena, *root->slot)) {
+        continue;
+      }
+
+      if (arena_mark_object(arena, *root->slot)) {
+        if (!mark_worklist_push(&worklist, *root->slot)) {
+          ok = false;
+          break;
+        }
+      }
+    }
+  }
+
+  for (size_t i = 0; ok && i < arena->remembered_set.count; i++) {
+    GCPtr* slot = (GCPtr*) arena->remembered_set.slots[i];
+
+    if (slot == NULL || *slot == NULL || !gc_object_is_young(arena, *slot)) {
+      continue;
+    }
+
+    if (arena_mark_object(arena, *slot)) {
+      ok = mark_worklist_push(&worklist, *slot);
+    }
+  }
+
+  while (ok && worklist.count > 0) {
+    GCPtr payload_pointer = mark_worklist_pop(&worklist);
+    ok = mark_young_object_fields_into_worklist(arena, payload_pointer, &worklist);
   }
 
   mark_worklist_destroy(&worklist);
@@ -320,7 +497,7 @@ void gc_sweep(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
 
-  switch (page->state) {
+    switch (page->state) {
       case GC_PAGE_ACTIVE:
       case GC_PAGE_FULL:
       case GC_PAGE_RELOCATING:
@@ -342,6 +519,53 @@ void gc_sweep(Arena* arena) {
         break;
     }
   }
+}
+
+static void gc_sweep_young(Arena* arena) {
+  for (size_t i = 0; i < arena->page_count; i++) {
+    Page* page = &arena->pages[i];
+
+    if (page->age != GC_PAGE_AGE_YOUNG) {
+      continue;
+    }
+
+    switch (page->state) {
+      case GC_PAGE_ACTIVE:
+      case GC_PAGE_FULL:
+      case GC_PAGE_LARGE:
+        if (page->livemap.live_objects == 0) {
+          if (arena->active_page == page) {
+            arena->active_page = NULL;
+          }
+          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+          break;
+        }
+
+        if (page == arena->active_page && page->state == GC_PAGE_ACTIVE) {
+          page->state = GC_PAGE_FULL;
+          arena->active_page = NULL;
+        }
+        page_promote(page);
+        break;
+      case GC_PAGE_FREE:
+        break;
+      case GC_PAGE_RELOCATING:
+      default:
+        assert(false);
+        break;
+    }
+  }
+}
+
+bool gc_collect_young(Arena* arena, const GCRootSet* roots) {
+  gc_clear_young_marks(arena);
+  if (!gc_mark_young_roots(arena, roots)) {
+    return false;
+  }
+
+  gc_sweep_young(arena);
+  gc_prune_remembered_set(arena);
+  return true;
 }
 
 bool gc_collect(Arena* arena, const GCRootSet* roots) {
@@ -379,5 +603,6 @@ bool gc_collect(Arena* arena, const GCRootSet* roots) {
   gc_assert_phase_invariants(arena, GC_PHASE_FINAL_SWEEP);
   gc_sweep(arena);
   gc_promote_surviving_pages(arena);
+  gc_remembered_set_clear(arena);
   return true;
 }

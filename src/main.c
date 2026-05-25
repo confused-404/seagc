@@ -524,6 +524,59 @@ static void test_promote_surviving_page(void) {
   arena_destroy(&arena);
 }
 
+static void test_minor_collect_old_to_young(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr parent_root;
+  GCPtr child;
+  Page* parent_page;
+  Page* child_page;
+  GCRoot root_array[1];
+  GCRootSet roots;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  parent->left = NULL;
+  parent->right = NULL;
+
+  parent_root = parent;
+  root_array[0].slot = &parent_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_collect(&arena, &roots));
+
+  parent = (Pair*) parent_root;
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  assert(parent_page->age == GC_PAGE_AGE_OLD);
+
+  child = arena_alloc(&arena, 1024);
+  assert(child != NULL);
+  child_page = arena_find_page(&arena, child);
+  assert(child_page != NULL);
+  assert(child_page->age == GC_PAGE_AGE_YOUNG);
+
+  assert(gc_store_pointer(&arena, parent, &parent->left, child));
+  assert(arena.remembered_set.count == 1);
+
+  assert(gc_collect_young(&arena, &roots));
+
+  assert(parent->left == child);
+  assert(arena_find_page(&arena, child) == child_page);
+  assert(child_page->age == GC_PAGE_AGE_OLD);
+  assert(arena.remembered_set.count == 0);
+
+  printf("minor_collect_test parent_page=%d child_page=%d remembered=%zu\n",
+      arena_page_index(&arena, parent_page),
+      arena_page_index(&arena, child_page),
+      arena.remembered_set.count);
+
+  arena_destroy(&arena);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -542,6 +595,7 @@ int main(void) {
   test_sweep_dead_normal_pages();
   test_sweep_and_reuse_large_page();
   test_promote_surviving_page();
+  test_minor_collect_old_to_young();
 
   for (i = 0; i < 1000; i++) {
     void* t;

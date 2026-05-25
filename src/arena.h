@@ -6,10 +6,17 @@
 #include "page.h"
 #include "object_header.h"
 
+typedef struct RememberedSet {
+  void*** slots;
+  size_t count;
+  size_t capacity;
+} RememberedSet;
+
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
   size_t page_count;
   Page* active_page;
+  RememberedSet remembered_set;
 } Arena;
 
 typedef struct AllocLayout {
