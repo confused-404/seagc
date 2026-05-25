@@ -565,7 +565,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(child_page != NULL);
   assert(child_page->age == GC_PAGE_AGE_YOUNG);
 
-  assert(gc_store_pointer(&arena, parent, &parent->left, child));
+  assert(GC_STORE(&arena, parent, left, child));
   assert(arena.remembered_set.count == 1);
 
   assert(gc_collect_young(&arena, &roots));

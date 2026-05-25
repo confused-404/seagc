@@ -15,6 +15,9 @@ typedef struct GCRootSet {
   size_t count;
 } GCRootSet;
 
+#define GC_STORE(arena, owner, field, value) \
+  gc_store_pointer((arena), (owner), (GCPtr*) &(owner)->field, (GCPtr) (value))
+
 void* gc_alloc(Arena* arena, size_t payload_size, const GCRootSet* roots);
 void* gc_alloc_traced(
     Arena* arena,
@@ -26,6 +29,7 @@ void gc_clear_marks(Arena* arena);
 bool gc_mark(Arena* arena, const GCRootSet* roots);
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots);
 void gc_sweep(Arena* arena);
+bool gc_verify_remembered_set(Arena* arena);
 bool gc_collect_young(Arena* arena, const GCRootSet* roots);
 bool gc_collect(Arena* arena, const GCRootSet* roots);
 void* gc_forward_if_relocating(Arena* arena, void* object);
