@@ -11,5 +11,6 @@
 #define GC_MAX_PAGES       128
 #define GC_LARGE_OBJECT_SIZE (GC_PAGE_SIZE / 2)
 #define GC_GC_PAGE_WATERMARK 8
+#define GC_PROMOTION_AGE   2
 
 #endif

@@ -39,6 +39,7 @@ bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
 bool gc_repair_all_objects(Arena* arena);
 void gc_finish_relocation(Arena* arena);
+bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots);
 
 static bool gc_object_is_young(Arena* arena, const void* object) {
   Page* page;
@@ -249,7 +250,7 @@ static bool gc_repair_pointer(Arena* arena, GCPtr* slot) {
     return true;
   }
 
-  *slot = gc_forward_if_relocating(arena, *slot);
+  *slot = gc_forward_existing_if_relocating(arena, *slot);
   return *slot != NULL;
 }
 
@@ -261,9 +262,16 @@ static bool gc_repair_field_visitor(
   RepairVisitState* state = (RepairVisitState*) user_data;
 
   (void) header;
-  (void) payload;
 
-  return gc_repair_pointer(state->arena, (GCPtr*) field_slot);
+  if (!gc_repair_pointer(state->arena, (GCPtr*) field_slot)) {
+    return false;
+  }
+
+  if (gc_object_is_old(state->arena, payload) && gc_object_is_young(state->arena, *field_slot)) {
+    return gc_remember_slot(state->arena, (GCPtr*) field_slot);
+  }
+
+  return true;
 }
 
 static bool gc_mark_field_visitor(
@@ -294,6 +302,10 @@ static void gc_repair_visit(Page* page, const ObjectHeader* header, void* payloa
   (void) header;
 
   if (!state->ok) {
+    return;
+  }
+
+  if (page->state == GC_PAGE_RELOCATING || page->state == GC_PAGE_FREE) {
     return;
   }
 
@@ -521,7 +533,7 @@ void gc_sweep(Arena* arena) {
   }
 }
 
-static void gc_sweep_young(Arena* arena) {
+static void gc_sweep_dead_young(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
 
@@ -538,14 +550,7 @@ static void gc_sweep_young(Arena* arena) {
             arena->active_page = NULL;
           }
           page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
-          break;
         }
-
-        if (page == arena->active_page && page->state == GC_PAGE_ACTIVE) {
-          page->state = GC_PAGE_FULL;
-          arena->active_page = NULL;
-        }
-        page_promote(page);
         break;
       case GC_PAGE_FREE:
         break;
@@ -563,7 +568,24 @@ bool gc_collect_young(Arena* arena, const GCRootSet* roots) {
     return false;
   }
 
-  gc_sweep_young(arena);
+  gc_sweep_dead_young(arena);
+  if (!gc_evacuate_young_pages(arena, roots)) {
+    return false;
+  }
+
+  if (!gc_verify_relocation(arena)) {
+    return false;
+  }
+
+  if (!gc_repair_roots(arena, roots)) {
+    return false;
+  }
+
+  if (!gc_repair_all_objects(arena)) {
+    return false;
+  }
+
+  gc_finish_relocation(arena);
   gc_prune_remembered_set(arena);
   return true;
 }

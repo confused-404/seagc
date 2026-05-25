@@ -178,6 +178,7 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
   header.size = payload_size;
   header.total_size = alloc_layout.total_size;
   header.trace = trace != NULL ? trace : &gc_trace_none;
+  header.age = 0;
 
   if (alloc_layout.total_size > GC_LARGE_OBJECT_SIZE) {
     return arena_alloc_large(arena, &header, &alloc_layout);
