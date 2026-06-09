@@ -36,5 +36,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object);
 void* gc_forward_existing_if_relocating(Arena* arena, void* object);
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots);
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots);
+void gc_test_fail_next_remembered_grow(void);
+void gc_test_fail_forwarding_after(size_t successful_forwarding_entries);
 
 #endif

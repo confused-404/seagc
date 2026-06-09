@@ -40,11 +40,17 @@ typedef enum GCCollectPhase {
   GC_PHASE_FINAL_SWEEP,
 } GCCollectPhase;
 
+static bool gc_test_fail_remembered_grow;
+
 bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
 bool gc_repair_all_objects(Arena* arena);
 void gc_finish_relocation(Arena* arena);
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots);
+
+void gc_test_fail_next_remembered_grow(void) {
+  gc_test_fail_remembered_grow = true;
+}
 
 static bool gc_object_is_young(Arena* arena, const void* object) {
   Page* page;
@@ -98,6 +104,11 @@ static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
   }
 
   if (remembered_set->count == remembered_set->capacity) {
+    if (gc_test_fail_remembered_grow) {
+      gc_test_fail_remembered_grow = false;
+      return false;
+    }
+
     if (remembered_set->capacity > SIZE_MAX / 2) {
       return false;
     }

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "arena.h"
@@ -56,6 +57,16 @@ static const TraceDescriptor pair_trace = {
   .pointer_count = ARRAY_LEN(pair_pointer_offsets),
   .pointer_offsets = pair_pointer_offsets,
 };
+
+static size_t test_failures;
+
+#define EXPECT_TRUE(condition) \
+  do { \
+    if (!(condition)) { \
+      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); \
+      test_failures++; \
+    } \
+  } while (0)
 
 static void count_object(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
   ObjectIterationStats* stats = (ObjectIterationStats*) user_data;
@@ -669,6 +680,145 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   arena_destroy(&arena);
 }
 
+static void test_write_barrier_failure_rolls_back_slot(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr child;
+  Page* parent_page;
+  bool stored;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  parent->left = NULL;
+  parent->right = NULL;
+
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  page_promote(parent_page);
+
+  child = arena_alloc(&arena, 1024);
+  assert(child != NULL);
+  assert(arena_find_page(&arena, child)->age == GC_PAGE_AGE_YOUNG);
+
+  gc_test_fail_next_remembered_grow();
+  stored = GC_STORE(&arena, parent, left, child);
+
+  EXPECT_TRUE(!stored);
+  EXPECT_TRUE(parent->left == NULL);
+  EXPECT_TRUE(arena.remembered_set.count == 0);
+
+  printf("barrier_failure_test stored=%d slot=%p remembered=%zu\n",
+      (int) stored,
+      parent->left,
+      arena.remembered_set.count);
+
+  arena_destroy(&arena);
+}
+
+static void test_oversized_allocation_is_rejected(void) {
+  Arena arena;
+  void* payload;
+
+  arena_init(&arena);
+
+  payload = arena_alloc(&arena, SIZE_MAX);
+
+  EXPECT_TRUE(payload == NULL);
+  EXPECT_TRUE(arena.page_count == 0);
+
+  printf("oversized_alloc_test payload=%p page_count=%zu\n",
+      payload,
+      arena.page_count);
+
+  arena_destroy(&arena);
+}
+
+static void test_invalid_trace_descriptor_is_rejected(void) {
+  Arena arena;
+  TraceDescriptor invalid_trace = {
+    .pointer_count = 1,
+    .pointer_offsets = NULL,
+  };
+  void* payload;
+
+  arena_init(&arena);
+
+  payload = arena_alloc_traced(&arena, sizeof(Pair), &invalid_trace);
+
+  EXPECT_TRUE(payload == NULL);
+  EXPECT_TRUE(arena.page_count == 0);
+
+  printf("invalid_trace_test payload=%p page_count=%zu\n",
+      payload,
+      arena.page_count);
+
+  arena_destroy(&arena);
+}
+
+static void test_failed_relocation_preserves_destination_page(void) {
+  Arena arena;
+  Pair* first_root;
+  Pair* second_root;
+  GCPtr unrelated_root;
+  GCRoot root_array[3];
+  GCRootSet roots;
+  Page* source_page;
+  Page* destination_page;
+  bool evacuated;
+
+  arena_init(&arena);
+
+  first_root = (Pair*) arena_alloc_traced(&arena, sizeof(*first_root), &pair_trace);
+  assert(first_root != NULL);
+  first_root->left = NULL;
+  first_root->right = NULL;
+
+  second_root = (Pair*) arena_alloc_traced(&arena, sizeof(*second_root), &pair_trace);
+  assert(second_root != NULL);
+  second_root->left = NULL;
+  second_root->right = NULL;
+
+  source_page = arena_find_page(&arena, first_root);
+  assert(source_page != NULL);
+  assert(source_page == arena_find_page(&arena, second_root));
+
+  while (arena.page_count < 2) {
+    void* filler = arena_alloc(&arena, 1024);
+    assert(filler != NULL);
+  }
+
+  unrelated_root = arena_alloc(&arena, 1024);
+  assert(unrelated_root != NULL);
+  destination_page = arena_find_page(&arena, unrelated_root);
+  assert(destination_page != NULL);
+  assert(destination_page != source_page);
+  assert(destination_page == arena.young_active_page);
+
+  root_array[0].slot = (GCPtr*) &first_root;
+  root_array[1].slot = (GCPtr*) &second_root;
+  root_array[2].slot = &unrelated_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_mark(&arena, &roots));
+
+  gc_test_fail_forwarding_after(1);
+  evacuated = gc_evacuate_sparse_pages(&arena, &roots);
+
+  EXPECT_TRUE(!evacuated);
+  EXPECT_TRUE(destination_page->state == GC_PAGE_ACTIVE);
+  EXPECT_TRUE(arena_find_page(&arena, unrelated_root) == destination_page);
+
+  printf("relocation_failure_test evacuated=%d destination_state=%d unrelated_page=%d\n",
+      (int) evacuated,
+      (int) destination_page->state,
+      arena_page_index(&arena, arena_find_page(&arena, unrelated_root)));
+
+  arena_destroy(&arena);
+}
+
 int main(void) {
   Arena arena;
   const size_t payload_size = 1024;
@@ -689,6 +839,10 @@ int main(void) {
   test_promote_surviving_page();
   test_minor_collect_old_to_young();
   test_minor_promoted_parent_remembers_young_child();
+  test_write_barrier_failure_rolls_back_slot();
+  test_oversized_allocation_is_rejected();
+  test_invalid_trace_descriptor_is_rejected();
+  test_failed_relocation_preserves_destination_page();
 
   for (i = 0; i < 1000; i++) {
     void* t;
@@ -722,5 +876,10 @@ int main(void) {
   printf("should collect soon: %s\n", arena_should_collect(&arena) ? "yes" : "no");
 
   arena_destroy(&arena);
+  if (test_failures > 0) {
+    printf("targeted failures=%zu\n", test_failures);
+    return 1;
+  }
+
   return 0;
 }

@@ -25,6 +25,16 @@ typedef struct RelocationPlan {
   u8 object_age;
 } RelocationPlan;
 
+static bool gc_test_forwarding_failure_enabled;
+static size_t gc_test_forwarding_successes_before_failure;
+static size_t gc_test_forwarding_successes;
+
+void gc_test_fail_forwarding_after(size_t successful_forwarding_entries) {
+  gc_test_forwarding_failure_enabled = true;
+  gc_test_forwarding_successes_before_failure = successful_forwarding_entries;
+  gc_test_forwarding_successes = 0;
+}
+
 static void gc_assert_relocation_page(const Page* page) {
   assert(page->state == GC_PAGE_RELOCATING);
 }
@@ -90,6 +100,12 @@ static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) 
 
   gc_assert_relocation_page(page);
 
+  if (gc_test_forwarding_failure_enabled &&
+      gc_test_forwarding_successes >= gc_test_forwarding_successes_before_failure) {
+    gc_test_forwarding_failure_enabled = false;
+    return false;
+  }
+
   if (page->forwarding_count == page->forwarding_capacity) {
     new_capacity = page->forwarding_capacity == 0 ? 8 : page->forwarding_capacity * 2;
     entries = (PageForwardingEntry*) realloc(page->forwarding, new_capacity * sizeof(page->forwarding[0]));
@@ -104,6 +120,9 @@ static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) 
   page->forwarding[page->forwarding_count].old_offset = old_offset;
   page->forwarding[page->forwarding_count].new_payload = new_payload;
   page->forwarding_count++;
+  if (gc_test_forwarding_failure_enabled) {
+    gc_test_forwarding_successes++;
+  }
   return true;
 }
 
