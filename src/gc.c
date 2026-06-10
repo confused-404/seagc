@@ -379,7 +379,20 @@ void* gc_alloc_traced(
     size_t payload_size,
     const TraceDescriptor* trace,
     const GCRootSet* roots) {
-  void* payload = arena_alloc_traced(arena, payload_size, trace);
+  ArenaCollectionTrigger trigger = arena_collection_trigger(arena);
+  void* payload;
+
+  if (trigger == GC_TRIGGER_FULL) {
+    if (!gc_collect(arena, roots)) {
+      return NULL;
+    }
+  } else if (trigger == GC_TRIGGER_YOUNG) {
+    if (!gc_collect_young(arena, roots)) {
+      return NULL;
+    }
+  }
+
+  payload = arena_alloc_traced(arena, payload_size, trace);
 
   if (payload != NULL) {
     return payload;
@@ -705,6 +718,18 @@ bool gc_mark(Arena* arena, const GCRootSet* roots) {
   return gc_mark_roots(arena, roots);
 }
 
+static void gc_clear_active_page_reference(Arena* arena, Page* page) {
+  if (arena->nursery_active_page == page) {
+    arena->nursery_active_page = NULL;
+  }
+  if (arena->survivor_active_page == page) {
+    arena->survivor_active_page = NULL;
+  }
+  if (arena->old_active_page == page) {
+    arena->old_active_page = NULL;
+  }
+}
+
 static void gc_promote_surviving_pages(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -717,14 +742,9 @@ static void gc_promote_surviving_pages(Arena* arena) {
           break;
         }
 
-        if (page == arena->young_active_page && page->state == GC_PAGE_ACTIVE) {
+        if (page->state == GC_PAGE_ACTIVE) {
           page->state = GC_PAGE_FULL;
-          arena->young_active_page = NULL;
-        }
-
-        if (page == arena->old_active_page && page->state == GC_PAGE_ACTIVE) {
-          page->state = GC_PAGE_FULL;
-          arena->old_active_page = NULL;
+          gc_clear_active_page_reference(arena, page);
         }
 
         page_promote(page);
@@ -749,16 +769,11 @@ void gc_sweep(Arena* arena) {
       case GC_PAGE_RELOCATING:
       case GC_PAGE_LARGE:
         if (page->livemap.live_objects == 0) {
-          if (arena->young_active_page == page) {
-            arena->young_active_page = NULL;
-          }
-          if (arena->old_active_page == page) {
-            arena->old_active_page = NULL;
-          }
+          gc_clear_active_page_reference(arena, page);
           if (page->state == GC_PAGE_RELOCATING) {
             assert(page->forwarding_count == 0 || page->forwarding != NULL);
           }
-          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG, GC_SPACE_NURSERY);
         }
         break;
       case GC_PAGE_FREE:
@@ -783,13 +798,8 @@ static void gc_sweep_dead_young(Arena* arena) {
       case GC_PAGE_FULL:
       case GC_PAGE_LARGE:
         if (page->livemap.live_objects == 0) {
-          if (arena->young_active_page == page) {
-            arena->young_active_page = NULL;
-          }
-          if (arena->old_active_page == page) {
-            arena->old_active_page = NULL;
-          }
-          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+          gc_clear_active_page_reference(arena, page);
+          page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG, GC_SPACE_NURSERY);
         }
         break;
       case GC_PAGE_FREE:

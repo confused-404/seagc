@@ -21,11 +21,18 @@ typedef struct RootRegistry {
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
   size_t page_count;
-  Page* young_active_page;
+  Page* nursery_active_page;
+  Page* survivor_active_page;
   Page* old_active_page;
   RememberedSet remembered_set;
   RootRegistry roots;
 } Arena;
+
+typedef enum ArenaCollectionTrigger {
+  GC_TRIGGER_NONE = 0,
+  GC_TRIGGER_YOUNG,
+  GC_TRIGGER_FULL,
+} ArenaCollectionTrigger;
 
 typedef struct AllocLayout {
   size_t header_size;
@@ -47,10 +54,17 @@ typedef bool (*ArenaObjectFieldVisitor)(
 AllocLayout arena_make_layout(size_t payload_size);
 void arena_init(Arena* arena);
 void arena_destroy(Arena* arena);
-Page* arena_add_page(Arena* arena, size_t capacity, PageState state, PageAge age);
+Page* arena_add_page(
+    Arena* arena,
+    size_t capacity,
+    PageState state,
+    PageAge age,
+    PageSpace space);
 Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age);
+Page* arena_get_active_page_for_space(Arena* arena, size_t size, PageSpace space);
 void* arena_alloc(Arena* arena, size_t payload_size);
 void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace);
+ArenaCollectionTrigger arena_collection_trigger(const Arena* arena);
 bool arena_should_collect(const Arena* arena);
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
 bool arena_mark_object(Arena* arena, const void* payload_pointer);

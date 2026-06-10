@@ -26,15 +26,16 @@ static int arena_page_index(const Arena* arena, const Page* page) {
 static void arena_dump_pages(const Arena* arena) {
   size_t i;
 
-  printf("page_count=%zu young_active_page=%d old_active_page=%d\n",
+  printf("page_count=%zu nursery_active_page=%d survivor_active_page=%d old_active_page=%d\n",
       arena->page_count,
-      arena_page_index(arena, arena->young_active_page),
+      arena_page_index(arena, arena->nursery_active_page),
+      arena_page_index(arena, arena->survivor_active_page),
       arena_page_index(arena, arena->old_active_page));
 
   for (i = 0; i < arena->page_count; i++) {
     const Page* page = &arena->pages[i];
-    printf("page[%zu] state=%d age=%d used=%zu capacity=%zu\n",
-        i, (int) page->state, (int) page->age, page->used, page->capacity);
+    printf("page[%zu] state=%d age=%d space=%d used=%zu capacity=%zu\n",
+        i, (int) page->state, (int) page->age, (int) page->space, page->used, page->capacity);
   }
 }
 
@@ -104,8 +105,9 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
 
   owner = arena_find_page(arena, payload);
   assert(owner != NULL);
-  assert(owner == arena->young_active_page);
+  assert(owner == arena->nursery_active_page);
   assert(owner->age == GC_PAGE_AGE_YOUNG);
+  assert(owner->space == GC_SPACE_NURSERY);
 
   page_offset = (size_t) ((const u8*) header - owner->base);
 
@@ -380,9 +382,9 @@ static void test_reuse_free_normal_page(void) {
   assert(free_page->state == GC_PAGE_FULL);
   assert(free_page->age == GC_PAGE_AGE_YOUNG);
 
-  page_reset(free_page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+  page_reset(free_page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG, GC_SPACE_NURSERY);
 
-  while (arena.young_active_page != free_page) {
+  while (arena.nursery_active_page != free_page) {
     payload = arena_alloc(&arena, 1024);
     assert(payload != NULL);
     assert(arena.page_count == original_page_count);
@@ -432,7 +434,7 @@ static void test_sweep_dead_normal_pages(void) {
   assert(dead_page->state == GC_PAGE_FREE);
   assert(arena.page_count == page_count_after_alloc);
 
-  while (arena.young_active_page != dead_page) {
+  while (arena.nursery_active_page != dead_page) {
     payload = arena_alloc(&arena, 1024);
     assert(payload != NULL);
     assert(arena.page_count == page_count_after_alloc);
@@ -506,7 +508,7 @@ static void test_promote_surviving_page(void) {
   owner_page = arena_find_page(&arena, rooted[0]);
   assert(owner_page != NULL);
   assert(owner_page->age == GC_PAGE_AGE_YOUNG);
-  assert(owner_page == arena.young_active_page);
+  assert(owner_page == arena.nursery_active_page);
 
   for (i = 0; i < ROOT_COUNT; i++) {
     root_array[i].slot = &rooted[i];
@@ -518,7 +520,8 @@ static void test_promote_surviving_page(void) {
 
   assert(owner_page->age == GC_PAGE_AGE_OLD);
   assert(owner_page->state == GC_PAGE_FULL);
-  assert(arena.young_active_page == NULL);
+  assert(arena.nursery_active_page == NULL);
+  assert(arena.survivor_active_page == NULL);
 
   next_payload = arena_alloc(&arena, 1024);
   assert(next_payload != NULL);
@@ -527,6 +530,7 @@ static void test_promote_surviving_page(void) {
   assert(next_page != NULL);
   assert(next_page != owner_page);
   assert(next_page->age == GC_PAGE_AGE_YOUNG);
+  assert(next_page->space == GC_SPACE_NURSERY);
 
   printf("promote_test old_page=%d new_page=%d old_age=%d new_age=%d\n",
       arena_page_index(&arena, owner_page),
@@ -577,6 +581,7 @@ static void test_minor_collect_old_to_young(void) {
   child_page = arena_find_page(&arena, child);
   assert(child_page != NULL);
   assert(child_page->age == GC_PAGE_AGE_YOUNG);
+  assert(child_page->space == GC_SPACE_NURSERY);
 
   assert(GC_STORE(&arena, parent, left, child));
   assert(arena.remembered_set.count == 1);
@@ -590,6 +595,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(child_page->state == GC_PAGE_FREE);
   assert(first_survivor_page != NULL);
   assert(first_survivor_page->age == GC_PAGE_AGE_YOUNG);
+  assert(first_survivor_page->space == GC_SPACE_SURVIVOR);
   header = get_header_pointer(first_survivor, header_size);
   assert(header->age == 1);
   assert(arena.remembered_set.count == 1);
@@ -603,6 +609,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(first_survivor_page->state == GC_PAGE_FREE);
   assert(promoted_child_page != NULL);
   assert(promoted_child_page->age == GC_PAGE_AGE_OLD);
+  assert(promoted_child_page->space == GC_SPACE_OLD);
   header = get_header_pointer(promoted_child, header_size);
   assert(header->age == GC_PROMOTION_AGE);
   assert(arena.remembered_set.count == 0);
@@ -645,6 +652,7 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   parent_page = arena_find_page(&arena, parent);
   assert(parent_page != NULL);
   assert(parent_page->age == GC_PAGE_AGE_YOUNG);
+  assert(parent_page->space == GC_SPACE_SURVIVOR);
 
   child = arena_alloc(&arena, 1024);
   assert(child != NULL);
@@ -660,6 +668,8 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   assert(child_page != NULL);
   assert(parent_page->age == GC_PAGE_AGE_OLD);
   assert(child_page->age == GC_PAGE_AGE_YOUNG);
+  assert(parent_page->space == GC_SPACE_OLD);
+  assert(child_page->space == GC_SPACE_SURVIVOR);
   assert(arena.remembered_set.count == 1);
 
   assert(gc_collect_young(&arena, &roots));
@@ -670,6 +680,7 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   assert(promoted_child != NULL);
   assert(child_page != NULL);
   assert(child_page->age == GC_PAGE_AGE_OLD);
+  assert(child_page->space == GC_SPACE_OLD);
   assert(arena.remembered_set.count == 0);
 
   printf("minor_promotion_barrier_test parent_page=%d child_page=%d remembered=%zu\n",
@@ -953,7 +964,7 @@ static void test_oversized_allocation_preserves_existing_arena(void) {
 
   first_payload = arena_alloc(&arena, 1024);
   assert(first_payload != NULL);
-  active_page = arena.young_active_page;
+  active_page = arena.nursery_active_page;
   assert(active_page != NULL);
   page_count = arena.page_count;
   used = active_page->used;
@@ -962,7 +973,7 @@ static void test_oversized_allocation_preserves_existing_arena(void) {
 
   EXPECT_TRUE(oversized_payload == NULL);
   EXPECT_TRUE(arena.page_count == page_count);
-  EXPECT_TRUE(arena.young_active_page == active_page);
+  EXPECT_TRUE(arena.nursery_active_page == active_page);
   EXPECT_TRUE(active_page->used == used);
 
   printf("oversized_preserve_test payload=%p page_count=%zu used=%zu\n",
@@ -1056,7 +1067,7 @@ static void test_failed_relocation_preserves_destination_page(void) {
   destination_page = arena_find_page(&arena, unrelated_root);
   assert(destination_page != NULL);
   assert(destination_page != source_page);
-  assert(destination_page == arena.young_active_page);
+  assert(destination_page == arena.nursery_active_page);
 
   root_array[0].slot = (GCPtr*) &first_root;
   root_array[1].slot = (GCPtr*) &second_root;
@@ -1077,6 +1088,64 @@ static void test_failed_relocation_preserves_destination_page(void) {
       (int) evacuated,
       (int) destination_page->state,
       arena_page_index(&arena, arena_find_page(&arena, unrelated_root)));
+
+  arena_destroy(&arena);
+}
+
+static void test_collection_triggers_and_gc_alloc_young(void) {
+  Arena arena;
+  void* payload;
+  Page* owner;
+  size_t page_count_at_trigger;
+
+  arena_init(&arena);
+
+  while (arena_collection_trigger(&arena) != GC_TRIGGER_YOUNG) {
+    payload = arena_alloc(&arena, 1024);
+    assert(payload != NULL);
+  }
+
+  page_count_at_trigger = arena.page_count;
+  EXPECT_TRUE(page_count_at_trigger >= GC_NURSERY_PAGE_TRIGGER);
+  EXPECT_TRUE(arena_collection_trigger(&arena) == GC_TRIGGER_YOUNG);
+
+  payload = gc_alloc(&arena, 1024, NULL);
+  EXPECT_TRUE(payload != NULL);
+  EXPECT_TRUE(arena.page_count == page_count_at_trigger);
+  EXPECT_TRUE(arena_collection_trigger(&arena) == GC_TRIGGER_NONE);
+
+  owner = arena_find_page(&arena, payload);
+  EXPECT_TRUE(owner != NULL);
+  EXPECT_TRUE(owner->space == GC_SPACE_NURSERY);
+  EXPECT_TRUE(owner->age == GC_PAGE_AGE_YOUNG);
+
+  printf("trigger_young_test page_count=%zu owner_page=%d trigger=%d\n",
+      arena.page_count,
+      arena_page_index(&arena, owner),
+      (int) arena_collection_trigger(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_full_trigger_takes_precedence(void) {
+  Arena arena;
+  void* payload;
+  ArenaCollectionTrigger trigger;
+
+  arena_init(&arena);
+
+  while ((GC_MAX_PAGES - arena.page_count) > GC_GC_PAGE_WATERMARK) {
+    payload = arena_alloc(&arena, GC_LARGE_OBJECT_SIZE + 1024);
+    assert(payload != NULL);
+  }
+
+  trigger = arena_collection_trigger(&arena);
+  EXPECT_TRUE(trigger == GC_TRIGGER_FULL);
+  EXPECT_TRUE(arena_should_collect(&arena));
+
+  printf("trigger_full_test page_count=%zu trigger=%d\n",
+      arena.page_count,
+      (int) trigger);
 
   arena_destroy(&arena);
 }
@@ -1111,6 +1180,8 @@ int main(void) {
   test_oversized_allocation_preserves_existing_arena();
   test_invalid_trace_descriptor_is_rejected();
   test_failed_relocation_preserves_destination_page();
+  test_collection_triggers_and_gc_alloc_young();
+  test_full_trigger_takes_precedence();
 
   for (i = 0; i < 1000; i++) {
     void* t;
@@ -1119,11 +1190,12 @@ int main(void) {
     assert(t != NULL);
 
     if (i % 5 == 0) {
-      printf("alloc[%d] ptr=%p page_count=%zu young_active_page=%d old_active_page=%d\n",
+      printf("alloc[%d] ptr=%p page_count=%zu nursery_active_page=%d survivor_active_page=%d old_active_page=%d\n",
           i,
           t,
           arena.page_count,
-          arena_page_index(&arena, arena.young_active_page),
+          arena_page_index(&arena, arena.nursery_active_page),
+          arena_page_index(&arena, arena.survivor_active_page),
           arena_page_index(&arena, arena.old_active_page));
     }
   }
@@ -1137,8 +1209,10 @@ int main(void) {
   assert(stats.objects == 1007);
 
   printf("pages: %zu\n", arena.page_count);
-  printf("young active page state: %d\n",
-      arena.young_active_page != NULL ? (int)arena.young_active_page->state : -1);
+  printf("nursery active page state: %d\n",
+      arena.nursery_active_page != NULL ? (int)arena.nursery_active_page->state : -1);
+  printf("survivor active page state: %d\n",
+      arena.survivor_active_page != NULL ? (int)arena.survivor_active_page->state : -1);
   printf("old active page state: %d\n",
       arena.old_active_page != NULL ? (int)arena.old_active_page->state : -1);
   printf("should collect soon: %s\n", arena_should_collect(&arena) ? "yes" : "no");

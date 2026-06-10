@@ -17,6 +17,7 @@ typedef struct PageSnapshot {
   size_t used;
   PageState state;
   PageAge age;
+  PageSpace space;
   LiveMap livemap;
 } PageSnapshot;
 
@@ -31,6 +32,7 @@ typedef struct RelocationPlan {
   AllocLayout layout;
   size_t old_offset;
   PageAge destination_age;
+  PageSpace destination_space;
   u8 object_age;
 } RelocationPlan;
 
@@ -97,6 +99,7 @@ static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
   list->items[list->count].used = page->used;
   list->items[list->count].state = page->state;
   list->items[list->count].age = page->age;
+  list->items[list->count].space = page->space;
   list->items[list->count].livemap = page->livemap;
   list->count++;
   return true;
@@ -163,6 +166,7 @@ static RelocationPlan gc_make_relocation_plan(
   plan.layout = arena_make_layout(plan.old_header->size);
   plan.old_offset = old_offset;
   plan.destination_age = source_page->age;
+  plan.destination_space = source_page->space;
   plan.object_age = plan.old_header->age;
 
   if (age_young_object && source_page->age == GC_PAGE_AGE_YOUNG) {
@@ -170,14 +174,20 @@ static RelocationPlan gc_make_relocation_plan(
     plan.object_age = next_age;
     if (next_age >= GC_PROMOTION_AGE) {
       plan.destination_age = GC_PAGE_AGE_OLD;
+      plan.destination_space = GC_SPACE_OLD;
+    } else {
+      plan.destination_space = GC_SPACE_SURVIVOR;
     }
   }
 
   return plan;
 }
 
-static Page* gc_acquire_relocation_destination_page(Arena* arena, size_t min_capacity, PageAge age) {
-  Page* destination_page = arena_get_active_page_for_age(arena, min_capacity, age);
+static Page* gc_acquire_relocation_destination_page(
+    Arena* arena,
+    size_t min_capacity,
+    PageSpace space) {
+  Page* destination_page = arena_get_active_page_for_space(arena, min_capacity, space);
 
   if (destination_page == NULL) {
     return NULL;
@@ -209,7 +219,7 @@ static bool gc_forward_live_object(
   destination_page = gc_acquire_relocation_destination_page(
       arena,
       plan.layout.total_size,
-      plan.destination_age);
+      plan.destination_space);
   if (destination_page == NULL) {
     return false;
   }
@@ -312,7 +322,8 @@ static void gc_cleanup_failed_relocation(
     Arena* arena,
     Page* source_page,
     PageState source_state,
-    Page* young_active_page,
+    Page* nursery_active_page,
+    Page* survivor_active_page,
     Page* old_active_page,
     PageSnapshotList* destinations) {
   for (size_t i = 0; i < destinations->count; i++) {
@@ -323,11 +334,13 @@ static void gc_cleanup_failed_relocation(
     page->used = snapshot->used;
     page->state = snapshot->state;
     page->age = snapshot->age;
+    page->space = snapshot->space;
     page->livemap = snapshot->livemap;
   }
 
   source_page->state = source_state;
-  arena->young_active_page = young_active_page;
+  arena->nursery_active_page = nursery_active_page;
+  arena->survivor_active_page = survivor_active_page;
   arena->old_active_page = old_active_page;
   page_clear_forwarding(source_page);
   page_snapshot_list_reset(destinations);
@@ -340,7 +353,8 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
     .capacity = 0,
   };
   PageState source_state = source_page->state;
-  Page* young_active_page = arena->young_active_page;
+  Page* nursery_active_page = arena->nursery_active_page;
+  Page* survivor_active_page = arena->survivor_active_page;
   Page* old_active_page = arena->old_active_page;
   source_page->state = GC_PAGE_RELOCATING;
   assert(source_page->forwarding_count == 0);
@@ -364,7 +378,8 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
             arena,
             source_page,
             source_state,
-            young_active_page,
+            nursery_active_page,
+            survivor_active_page,
             old_active_page,
             &destinations);
         return false;
@@ -423,13 +438,16 @@ void gc_finish_relocation(Arena* arena) {
 
     if (page->state == GC_PAGE_RELOCATING) {
       assert(page->forwarding_count == 0 || page->forwarding != NULL);
-      if (arena->young_active_page == page) {
-        arena->young_active_page = NULL;
+      if (arena->nursery_active_page == page) {
+        arena->nursery_active_page = NULL;
+      }
+      if (arena->survivor_active_page == page) {
+        arena->survivor_active_page = NULL;
       }
       if (arena->old_active_page == page) {
         arena->old_active_page = NULL;
       }
-      page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+      page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG, GC_SPACE_NURSERY);
     }
   }
 }
@@ -438,6 +456,10 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   (void) roots;
 
   const size_t initial_page_count = arena->page_count;
+
+  arena->nursery_active_page = NULL;
+  arena->survivor_active_page = NULL;
+  arena->old_active_page = NULL;
 
   for (size_t i = 0; i < initial_page_count; i++) {
     Page* source_page = &arena->pages[i];
@@ -459,6 +481,9 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
 
   (void) roots;
 
+  arena->nursery_active_page = NULL;
+  arena->survivor_active_page = NULL;
+
   for (size_t i = 0; i < initial_page_count; i++) {
     Page* source_page = &arena->pages[i];
 
@@ -472,11 +497,15 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
 
     if (source_page->state == GC_PAGE_LARGE) {
       page_promote(source_page);
+      source_page->space = GC_SPACE_LARGE;
       continue;
     }
 
-    if (source_page == arena->young_active_page) {
-      arena->young_active_page = NULL;
+    if (source_page == arena->nursery_active_page) {
+      arena->nursery_active_page = NULL;
+    }
+    if (source_page == arena->survivor_active_page) {
+      arena->survivor_active_page = NULL;
     }
     if (source_page == arena->old_active_page) {
       arena->old_active_page = NULL;
