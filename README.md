@@ -14,13 +14,17 @@ Implemented:
 - Page-local livemaps
 - Sweeping and page reuse
 - Sparse-page evacuation with forwarding and pointer repair
+- Young collection with object aging and promotion
+- Old-to-young write barriers through `GC_STORE`
+- Remembered sets for minor collection
+- Failure rollback for allocation, barriers, and relocation
 - GC-aware allocation retry through `gc_alloc`
 
 Not implemented:
 
 - Stack or conservative roots
 - Partial-page reclamation without evacuation
-- Generations, barriers, or remembered sets
+- Full generational policy beyond the current young/old page split
 - Concurrent marking or relocation
 - Weak references or finalizers
 
