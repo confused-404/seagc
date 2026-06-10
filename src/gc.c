@@ -79,13 +79,49 @@ static bool gc_object_is_old(Arena* arena, const void* object) {
   return page != NULL && page->age == GC_PAGE_AGE_OLD;
 }
 
+static bool gc_page_can_own_remembered_slots(const Page* page) {
+  return page != NULL &&
+      page->age == GC_PAGE_AGE_OLD &&
+      (page->state == GC_PAGE_ACTIVE ||
+          page->state == GC_PAGE_FULL ||
+          page->state == GC_PAGE_LARGE);
+}
+
+static bool gc_slot_belongs_to_page(const Page* page, const GCPtr* slot) {
+  const u8* address = (const u8*) slot;
+
+  return page != NULL &&
+      slot != NULL &&
+      page->base != NULL &&
+      address >= page->base &&
+      address < page->top;
+}
+
 static void gc_remembered_set_clear(Arena* arena) {
-  arena->remembered_set.count = 0;
+  for (size_t i = 0; i < arena->page_count; i++) {
+    arena->pages[i].remembered_set.count = 0;
+  }
 }
 
 static bool gc_remembered_set_contains(const Arena* arena, GCPtr* slot) {
-  const RememberedSet* remembered_set = &arena->remembered_set;
+  const Page* owner_page;
+  const RememberedSet* remembered_set;
 
+  owner_page = NULL;
+  for (size_t i = 0; i < arena->page_count; i++) {
+    const Page* page = &arena->pages[i];
+
+    if (gc_slot_belongs_to_page(page, slot)) {
+      owner_page = page;
+      break;
+    }
+  }
+
+  if (owner_page == NULL) {
+    return false;
+  }
+
+  remembered_set = &owner_page->remembered_set;
   for (size_t i = 0; i < remembered_set->count; i++) {
     if (remembered_set->slots[i] == (void**) slot) {
       return true;
@@ -95,8 +131,8 @@ static bool gc_remembered_set_contains(const Arena* arena, GCPtr* slot) {
   return false;
 }
 
-static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
-  RememberedSet* remembered_set = &arena->remembered_set;
+static bool gc_remember_slot_on_page(Page* owner_page, GCPtr* slot) {
+  RememberedSet* remembered_set;
   void*** slots;
   size_t new_capacity;
 
@@ -104,21 +140,29 @@ static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
     return true;
   }
 
-  if (gc_remembered_set_contains(arena, slot)) {
-    return true;
+  if (!gc_page_can_own_remembered_slots(owner_page) ||
+      !gc_slot_belongs_to_page(owner_page, slot)) {
+    return false;
+  }
+
+  remembered_set = &owner_page->remembered_set;
+  for (size_t i = 0; i < remembered_set->count; i++) {
+    if (remembered_set->slots[i] == (void**) slot) {
+      return true;
+    }
+  }
+
+  if (gc_test_fail_remembered_grow && remembered_set->count == remembered_set->capacity) {
+    gc_test_fail_remembered_grow = false;
+    return false;
   }
 
   if (remembered_set->count == remembered_set->capacity) {
-    if (gc_test_fail_remembered_grow) {
-      gc_test_fail_remembered_grow = false;
-      return false;
-    }
-
     if (remembered_set->capacity > SIZE_MAX / 2) {
       return false;
     }
 
-    new_capacity = remembered_set->capacity == 0 ? 16 : remembered_set->capacity * 2;
+    new_capacity = remembered_set->capacity == 0 ? 8 : remembered_set->capacity * 2;
     if (new_capacity > SIZE_MAX / sizeof(remembered_set->slots[0])) {
       return false;
     }
@@ -136,6 +180,16 @@ static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
 
   remembered_set->slots[remembered_set->count++] = (void**) slot;
   return true;
+}
+
+size_t gc_remembered_set_count(const Arena* arena) {
+  size_t count = 0;
+
+  for (size_t i = 0; i < arena->page_count; i++) {
+    count += arena->pages[i].remembered_set.count;
+  }
+
+  return count;
 }
 
 static bool gc_root_registry_contains(const Arena* arena, GCPtr* slot) {
@@ -263,18 +317,29 @@ bool gc_handle_set(GCHandle* handle, GCPtr value) {
 }
 
 static void gc_prune_remembered_set(Arena* arena) {
-  RememberedSet* remembered_set = &arena->remembered_set;
-  size_t write = 0;
+  for (size_t page_index = 0; page_index < arena->page_count; page_index++) {
+    Page* page = &arena->pages[page_index];
+    RememberedSet* remembered_set = &page->remembered_set;
+    size_t write = 0;
 
-  for (size_t read = 0; read < remembered_set->count; read++) {
-    void** slot = remembered_set->slots[read];
-
-    if (slot != NULL && *slot != NULL && gc_object_is_young(arena, *slot)) {
-      remembered_set->slots[write++] = slot;
+    if (!gc_page_can_own_remembered_slots(page)) {
+      remembered_set->count = 0;
+      continue;
     }
-  }
 
-  remembered_set->count = write;
+    for (size_t read = 0; read < remembered_set->count; read++) {
+      void** slot = remembered_set->slots[read];
+
+      if (gc_slot_belongs_to_page(page, (GCPtr*) slot) &&
+          slot != NULL &&
+          *slot != NULL &&
+          gc_object_is_young(arena, *slot)) {
+        remembered_set->slots[write++] = slot;
+      }
+    }
+
+    remembered_set->count = write;
+  }
 }
 
 static bool gc_verify_remembered_field_visitor(
@@ -413,10 +478,13 @@ void* gc_alloc_traced(
 }
 
 bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
+  Page* owner_page;
+
   assert(slot != NULL);
 
-  if (gc_object_is_old(arena, owner) && gc_object_is_young(arena, value)) {
-    if (!gc_remember_slot(arena, slot)) {
+  owner_page = arena_find_page(arena, owner);
+  if (gc_page_can_own_remembered_slots(owner_page) && gc_object_is_young(arena, value)) {
+    if (!gc_remember_slot_on_page(owner_page, slot)) {
       return false;
     }
   }
@@ -488,7 +556,9 @@ static bool gc_repair_field_visitor(
   }
 
   if (gc_object_is_old(state->arena, payload) && gc_object_is_young(state->arena, *field_slot)) {
-    return gc_remember_slot(state->arena, (GCPtr*) field_slot);
+    Page* owner_page = arena_find_page(state->arena, payload);
+
+    return gc_remember_slot_on_page(owner_page, (GCPtr*) field_slot);
   }
 
   return true;
@@ -686,15 +756,19 @@ static bool gc_mark_young_roots(Arena* arena, const GCRootSet* roots) {
     ok = gc_mark_young_root_slot(arena, (GCPtr*) arena->roots.slots[i], &worklist);
   }
 
-  for (size_t i = 0; ok && i < arena->remembered_set.count; i++) {
-    GCPtr* slot = (GCPtr*) arena->remembered_set.slots[i];
+  for (size_t page_index = 0; ok && page_index < arena->page_count; page_index++) {
+    RememberedSet* remembered_set = &arena->pages[page_index].remembered_set;
 
-    if (slot == NULL || *slot == NULL || !gc_object_is_young(arena, *slot)) {
-      continue;
-    }
+    for (size_t i = 0; ok && i < remembered_set->count; i++) {
+      GCPtr* slot = (GCPtr*) remembered_set->slots[i];
 
-    if (arena_mark_object(arena, *slot)) {
-      ok = mark_worklist_push(&worklist, *slot);
+      if (slot == NULL || *slot == NULL || !gc_object_is_young(arena, *slot)) {
+        continue;
+      }
+
+      if (arena_mark_object(arena, *slot)) {
+        ok = mark_worklist_push(&worklist, *slot);
+      }
     }
   }
 

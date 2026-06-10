@@ -6,12 +6,6 @@
 #include "page.h"
 #include "object_header.h"
 
-typedef struct RememberedSet {
-  void*** slots;
-  size_t count;
-  size_t capacity;
-} RememberedSet;
-
 typedef struct RootRegistry {
   void*** slots;
   size_t count;
@@ -24,7 +18,6 @@ typedef struct Arena {
   Page* nursery_active_page;
   Page* survivor_active_page;
   Page* old_active_page;
-  RememberedSet remembered_set;
   RootRegistry roots;
 } Arena;
 

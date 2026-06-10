@@ -584,7 +584,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(child_page->space == GC_SPACE_NURSERY);
 
   assert(GC_STORE(&arena, parent, left, child));
-  assert(arena.remembered_set.count == 1);
+  assert(gc_remembered_set_count(&arena) == 1);
 
   assert(gc_collect_young(&arena, &roots));
 
@@ -598,7 +598,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(first_survivor_page->space == GC_SPACE_SURVIVOR);
   header = get_header_pointer(first_survivor, header_size);
   assert(header->age == 1);
-  assert(arena.remembered_set.count == 1);
+  assert(gc_remembered_set_count(&arena) == 1);
 
   assert(gc_collect_young(&arena, &roots));
 
@@ -612,13 +612,13 @@ static void test_minor_collect_old_to_young(void) {
   assert(promoted_child_page->space == GC_SPACE_OLD);
   header = get_header_pointer(promoted_child, header_size);
   assert(header->age == GC_PROMOTION_AGE);
-  assert(arena.remembered_set.count == 0);
+  assert(gc_remembered_set_count(&arena) == 0);
 
   printf("minor_collect_test parent_page=%d child_page=%d promoted_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       arena_page_index(&arena, child_page),
       arena_page_index(&arena, promoted_child_page),
-      arena.remembered_set.count);
+      gc_remembered_set_count(&arena));
 
   arena_destroy(&arena);
 }
@@ -670,7 +670,7 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   assert(child_page->age == GC_PAGE_AGE_YOUNG);
   assert(parent_page->space == GC_SPACE_OLD);
   assert(child_page->space == GC_SPACE_SURVIVOR);
-  assert(arena.remembered_set.count == 1);
+  assert(gc_remembered_set_count(&arena) == 1);
 
   assert(gc_collect_young(&arena, &roots));
 
@@ -681,12 +681,12 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   assert(child_page != NULL);
   assert(child_page->age == GC_PAGE_AGE_OLD);
   assert(child_page->space == GC_SPACE_OLD);
-  assert(arena.remembered_set.count == 0);
+  assert(gc_remembered_set_count(&arena) == 0);
 
   printf("minor_promotion_barrier_test parent_page=%d child_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       arena_page_index(&arena, child_page),
-      arena.remembered_set.count);
+      gc_remembered_set_count(&arena));
 
   arena_destroy(&arena);
 }
@@ -718,12 +718,12 @@ static void test_write_barrier_failure_rolls_back_slot(void) {
 
   EXPECT_TRUE(!stored);
   EXPECT_TRUE(parent->left == NULL);
-  EXPECT_TRUE(arena.remembered_set.count == 0);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
 
   printf("barrier_failure_test stored=%d slot=%p remembered=%zu\n",
       (int) stored,
       parent->left,
-      arena.remembered_set.count);
+      gc_remembered_set_count(&arena));
 
   arena_destroy(&arena);
 }
@@ -761,13 +761,13 @@ static void test_write_barrier_failure_preserves_existing_slot(void) {
 
   EXPECT_TRUE(!stored);
   EXPECT_TRUE(parent->left == old_child);
-  EXPECT_TRUE(arena.remembered_set.count == 0);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
 
   printf("barrier_preserve_test stored=%d slot=%p old=%p remembered=%zu\n",
       (int) stored,
       parent->left,
       old_child,
-      arena.remembered_set.count);
+      gc_remembered_set_count(&arena));
 
   arena_destroy(&arena);
 }
@@ -799,12 +799,169 @@ static void test_remembered_set_verification_detects_missing_barrier(void) {
 
   assert(GC_STORE(&arena, parent, left, child));
   EXPECT_TRUE(gc_verify_remembered_set(&arena));
-  EXPECT_TRUE(arena.remembered_set.count == 1);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
 
   printf("missing_barrier_verify_test parent=%p child=%p remembered=%zu\n",
       (void*) parent,
       child,
-      arena.remembered_set.count);
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_remembered_sets_are_page_local_and_deduplicated(void) {
+  Arena arena;
+  Pair* first_parent;
+  Pair* second_parent;
+  GCPtr first_child;
+  GCPtr second_child;
+  Page* first_page;
+  Page* second_page;
+
+  arena_init(&arena);
+
+  first_parent = (Pair*) arena_alloc_traced(&arena, sizeof(*first_parent), &pair_trace);
+  assert(first_parent != NULL);
+  assert(GC_STORE(&arena, first_parent, left, NULL));
+  assert(GC_STORE(&arena, first_parent, right, NULL));
+  first_page = arena_find_page(&arena, first_parent);
+  assert(first_page != NULL);
+
+  while (arena.nursery_active_page == first_page) {
+    void* filler = arena_alloc(&arena, 1024);
+    assert(filler != NULL);
+  }
+
+  second_parent = (Pair*) arena_alloc_traced(&arena, sizeof(*second_parent), &pair_trace);
+  assert(second_parent != NULL);
+  assert(GC_STORE(&arena, second_parent, left, NULL));
+  assert(GC_STORE(&arena, second_parent, right, NULL));
+  second_page = arena_find_page(&arena, second_parent);
+  assert(second_page != NULL);
+  assert(second_page != first_page);
+
+  page_promote(first_page);
+  page_promote(second_page);
+
+  first_child = arena_alloc(&arena, 128);
+  second_child = arena_alloc(&arena, 128);
+  assert(first_child != NULL);
+  assert(second_child != NULL);
+
+  assert(GC_STORE(&arena, first_parent, left, first_child));
+  assert(GC_STORE(&arena, first_parent, left, second_child));
+  assert(GC_STORE(&arena, second_parent, left, first_child));
+
+  EXPECT_TRUE(first_page->remembered_set.count == 1);
+  EXPECT_TRUE(second_page->remembered_set.count == 1);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 2);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  printf("remembered_page_local_test first_page=%d second_page=%d remembered=%zu\n",
+      arena_page_index(&arena, first_page),
+      arena_page_index(&arena, second_page),
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_remembered_set_prunes_stale_slots(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr child;
+  Page* parent_page;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  page_promote(parent_page);
+
+  child = arena_alloc(&arena, 128);
+  assert(child != NULL);
+  assert(GC_STORE(&arena, parent, left, child));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+
+  assert(GC_STORE(&arena, parent, left, NULL));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  assert(gc_collect_young(&arena, NULL));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
+
+  printf("remembered_prune_test parent_page=%d remembered=%zu\n",
+      arena_page_index(&arena, parent_page),
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_remembered_set_stress_minor_relocation_repair(void) {
+  enum {
+    PARENT_COUNT = 32,
+  };
+  Arena arena;
+  GCPtr parents[PARENT_COUNT];
+  GCPtr original_left[PARENT_COUNT];
+  GCRoot root_array[PARENT_COUNT];
+  GCRootSet roots;
+
+  arena_init(&arena);
+
+  for (size_t i = 0; i < PARENT_COUNT; i++) {
+    Pair* parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+    assert(parent != NULL);
+    assert(GC_STORE(&arena, parent, left, NULL));
+    assert(GC_STORE(&arena, parent, right, NULL));
+    parents[i] = parent;
+    root_array[i].slot = &parents[i];
+  }
+
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+  assert(gc_collect(&arena, &roots));
+
+  for (size_t i = 0; i < PARENT_COUNT; i++) {
+    Pair* parent = (Pair*) parents[i];
+    GCPtr left_child = arena_alloc(&arena, 128);
+    GCPtr right_child = arena_alloc(&arena, 128);
+
+    assert(parent != NULL);
+    assert(left_child != NULL);
+    assert(right_child != NULL);
+    assert(arena_find_page(&arena, parent)->age == GC_PAGE_AGE_OLD);
+    assert(GC_STORE(&arena, parent, left, left_child));
+    assert(GC_STORE(&arena, parent, right, right_child));
+    original_left[i] = left_child;
+  }
+
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == PARENT_COUNT * 2u);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  assert(gc_collect_young(&arena, &roots));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == PARENT_COUNT * 2u);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  for (size_t i = 0; i < PARENT_COUNT; i++) {
+    Pair* parent = (Pair*) parents[i];
+
+    EXPECT_TRUE(parent->left != NULL);
+    EXPECT_TRUE(parent->right != NULL);
+    EXPECT_TRUE(parent->left != original_left[i]);
+    EXPECT_TRUE(arena_find_page(&arena, parent->left)->age == GC_PAGE_AGE_YOUNG);
+  }
+
+  assert(gc_collect_young(&arena, &roots));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  printf("remembered_stress_test parents=%d remembered=%zu\n",
+      PARENT_COUNT,
+      gc_remembered_set_count(&arena));
 
   arena_destroy(&arena);
 }
@@ -1210,6 +1367,9 @@ int main(void) {
   test_write_barrier_failure_rolls_back_slot();
   test_write_barrier_failure_preserves_existing_slot();
   test_remembered_set_verification_detects_missing_barrier();
+  test_remembered_sets_are_page_local_and_deduplicated();
+  test_remembered_set_prunes_stale_slots();
+  test_remembered_set_stress_minor_relocation_repair();
   test_root_registration_failure_and_deduplication();
   test_registered_root_survives_full_collect();
   test_unregistered_root_allows_collection();

@@ -35,6 +35,7 @@ void gc_clear_marks(Arena* arena);
 bool gc_mark(Arena* arena, const GCRootSet* roots);
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots);
 void gc_sweep(Arena* arena);
+size_t gc_remembered_set_count(const Arena* arena);
 bool gc_verify_remembered_set(Arena* arena);
 bool gc_collect_young(Arena* arena, const GCRootSet* roots);
 bool gc_collect(Arena* arena, const GCRootSet* roots);

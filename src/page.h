@@ -29,6 +29,12 @@ typedef struct PageForwardingEntry {
   u8* new_payload;
 } PageForwardingEntry;
 
+typedef struct RememberedSet {
+  void*** slots;
+  size_t count;
+  size_t capacity;
+} RememberedSet;
+
 typedef struct Page {
   u8* base;
   u8* top;
@@ -39,6 +45,7 @@ typedef struct Page {
   PageAge age;
   PageSpace space;
   LiveMap livemap;
+  RememberedSet remembered_set;
   PageForwardingEntry* forwarding;
   size_t forwarding_count;
   size_t forwarding_capacity;
