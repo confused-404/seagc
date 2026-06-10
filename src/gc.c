@@ -273,12 +273,13 @@ void* gc_alloc_traced(
 bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
   assert(slot != NULL);
 
-  *slot = value;
-
   if (gc_object_is_old(arena, owner) && gc_object_is_young(arena, value)) {
-    return gc_remember_slot(arena, slot);
+    if (!gc_remember_slot(arena, slot)) {
+      return false;
+    }
   }
 
+  *slot = value;
   return true;
 }
 

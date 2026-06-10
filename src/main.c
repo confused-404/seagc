@@ -717,6 +717,50 @@ static void test_write_barrier_failure_rolls_back_slot(void) {
   arena_destroy(&arena);
 }
 
+static void test_write_barrier_failure_preserves_existing_slot(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr old_child;
+  GCPtr young_child;
+  Page* parent_page;
+  bool stored;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+
+  old_child = arena_alloc(&arena, 1024);
+  assert(old_child != NULL);
+
+  parent->left = old_child;
+  parent->right = NULL;
+
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  assert(parent_page == arena_find_page(&arena, old_child));
+  page_promote(parent_page);
+
+  young_child = arena_alloc(&arena, 1024);
+  assert(young_child != NULL);
+  assert(arena_find_page(&arena, young_child)->age == GC_PAGE_AGE_YOUNG);
+
+  gc_test_fail_next_remembered_grow();
+  stored = GC_STORE(&arena, parent, left, young_child);
+
+  EXPECT_TRUE(!stored);
+  EXPECT_TRUE(parent->left == old_child);
+  EXPECT_TRUE(arena.remembered_set.count == 0);
+
+  printf("barrier_preserve_test stored=%d slot=%p old=%p remembered=%zu\n",
+      (int) stored,
+      parent->left,
+      old_child,
+      arena.remembered_set.count);
+
+  arena_destroy(&arena);
+}
+
 static void test_oversized_allocation_is_rejected(void) {
   Arena arena;
   void* payload;
@@ -896,6 +940,7 @@ int main(void) {
   test_minor_collect_old_to_young();
   test_minor_promoted_parent_remembers_young_child();
   test_write_barrier_failure_rolls_back_slot();
+  test_write_barrier_failure_preserves_existing_slot();
   test_oversized_allocation_is_rejected();
   test_oversized_allocation_preserves_existing_arena();
   test_invalid_trace_descriptor_is_rejected();
