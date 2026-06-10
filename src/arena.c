@@ -12,6 +12,17 @@ static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
 }
 
+static bool checked_align_size(size_t size, size_t* aligned_size) {
+  const size_t alignment_mask = GC_ALIGNMENT - 1u;
+
+  if (size > SIZE_MAX - alignment_mask) {
+    return false;
+  }
+
+  *aligned_size = ALIGN_UP(size, GC_ALIGNMENT);
+  return true;
+}
+
 static const TraceDescriptor gc_trace_none = {
   .pointer_count = 0,
   .pointer_offsets = NULL,
@@ -27,17 +38,58 @@ static size_t get_header_size(void) {
   return align_size(sizeof(ObjectHeader));
 }
 
+static bool arena_make_layout_checked(size_t payload_size, AllocLayout* alloc_layout) {
+  size_t aligned_payload_size;
+  size_t unaligned_total_size;
+
+  alloc_layout->header_size = get_header_size();
+
+  if (!checked_align_size(payload_size, &aligned_payload_size)) {
+    alloc_layout->total_size = 0;
+    return false;
+  }
+
+  if (alloc_layout->header_size > SIZE_MAX - aligned_payload_size) {
+    alloc_layout->total_size = 0;
+    return false;
+  }
+
+  unaligned_total_size = alloc_layout->header_size + aligned_payload_size;
+  if (!checked_align_size(unaligned_total_size, &alloc_layout->total_size)) {
+    alloc_layout->total_size = 0;
+    return false;
+  }
+
+  return true;
+}
+
 AllocLayout arena_make_layout(size_t payload_size) {
   AllocLayout alloc_layout;
 
-  alloc_layout.header_size = get_header_size();
-  alloc_layout.total_size = align_size(alloc_layout.header_size + align_size(payload_size));
+  (void) arena_make_layout_checked(payload_size, &alloc_layout);
+  return alloc_layout;
+}
 
-  if (alloc_layout.total_size == 0) {
-    alloc_layout.total_size = GC_ALIGNMENT;
+static bool arena_trace_descriptor_is_valid(
+    const TraceDescriptor* trace,
+    size_t payload_size) {
+  if (trace == NULL || trace->pointer_count == 0) {
+    return true;
   }
 
-  return alloc_layout;
+  if (trace->pointer_offsets == NULL) {
+    return false;
+  }
+
+  for (size_t i = 0; i < trace->pointer_count; i++) {
+    const size_t offset = trace->pointer_offsets[i];
+
+    if (offset > payload_size || payload_size - offset < sizeof(void*)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 Page* arena_add_page(Arena* arena, size_t capacity, PageState state, PageAge age) {
@@ -190,7 +242,14 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
   ObjectHeader header;
   AllocLayout alloc_layout;
 
-  alloc_layout = arena_make_layout(payload_size);
+  if (!arena_make_layout_checked(payload_size, &alloc_layout)) {
+    return NULL;
+  }
+
+  if (!arena_trace_descriptor_is_valid(trace, payload_size)) {
+    return NULL;
+  }
+
   header.size = payload_size;
   header.total_size = alloc_layout.total_size;
   header.trace = trace != NULL ? trace : &gc_trace_none;

@@ -735,23 +735,79 @@ static void test_oversized_allocation_is_rejected(void) {
   arena_destroy(&arena);
 }
 
-static void test_invalid_trace_descriptor_is_rejected(void) {
+static void test_oversized_allocation_preserves_existing_arena(void) {
   Arena arena;
-  TraceDescriptor invalid_trace = {
-    .pointer_count = 1,
-    .pointer_offsets = NULL,
-  };
-  void* payload;
+  void* first_payload;
+  void* oversized_payload;
+  Page* active_page;
+  size_t page_count;
+  size_t used;
 
   arena_init(&arena);
 
-  payload = arena_alloc_traced(&arena, sizeof(Pair), &invalid_trace);
+  first_payload = arena_alloc(&arena, 1024);
+  assert(first_payload != NULL);
+  active_page = arena.young_active_page;
+  assert(active_page != NULL);
+  page_count = arena.page_count;
+  used = active_page->used;
 
-  EXPECT_TRUE(payload == NULL);
+  oversized_payload = arena_alloc(&arena, SIZE_MAX);
+
+  EXPECT_TRUE(oversized_payload == NULL);
+  EXPECT_TRUE(arena.page_count == page_count);
+  EXPECT_TRUE(arena.young_active_page == active_page);
+  EXPECT_TRUE(active_page->used == used);
+
+  printf("oversized_preserve_test payload=%p page_count=%zu used=%zu\n",
+      oversized_payload,
+      arena.page_count,
+      active_page->used);
+
+  arena_destroy(&arena);
+}
+
+static void test_invalid_trace_descriptor_is_rejected(void) {
+  Arena arena;
+  const size_t invalid_offset_array[] = {
+    sizeof(Pair) - sizeof(void*) + 1u,
+  };
+  const size_t valid_offset_array[] = {
+    offsetof(Pair, right),
+  };
+  TraceDescriptor null_offsets_trace = {
+    .pointer_count = 1,
+    .pointer_offsets = NULL,
+  };
+  TraceDescriptor out_of_bounds_trace = {
+    .pointer_count = ARRAY_LEN(invalid_offset_array),
+    .pointer_offsets = invalid_offset_array,
+  };
+  TraceDescriptor valid_trace = {
+    .pointer_count = ARRAY_LEN(valid_offset_array),
+    .pointer_offsets = valid_offset_array,
+  };
+  void* null_offsets_payload;
+  void* out_of_bounds_payload;
+  void* valid_payload;
+
+  arena_init(&arena);
+
+  null_offsets_payload = arena_alloc_traced(&arena, sizeof(Pair), &null_offsets_trace);
+  out_of_bounds_payload = arena_alloc_traced(&arena, sizeof(Pair), &out_of_bounds_trace);
+
+  EXPECT_TRUE(null_offsets_payload == NULL);
+  EXPECT_TRUE(out_of_bounds_payload == NULL);
   EXPECT_TRUE(arena.page_count == 0);
 
-  printf("invalid_trace_test payload=%p page_count=%zu\n",
-      payload,
+  valid_payload = arena_alloc_traced(&arena, sizeof(Pair), &valid_trace);
+  EXPECT_TRUE(valid_payload != NULL);
+  EXPECT_TRUE(arena.page_count == 1);
+
+  printf("invalid_trace_test null_payload=%p bounds_payload=%p valid_payload=%p page_count=%zu\n",
+      null_offsets_payload,
+      out_of_bounds_payload,
+      valid_payload,
       arena.page_count);
 
   arena_destroy(&arena);
@@ -841,6 +897,7 @@ int main(void) {
   test_minor_promoted_parent_remembers_young_child();
   test_write_barrier_failure_rolls_back_slot();
   test_oversized_allocation_is_rejected();
+  test_oversized_allocation_preserves_existing_arena();
   test_invalid_trace_descriptor_is_rejected();
   test_failed_relocation_preserves_destination_page();
 
