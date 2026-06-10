@@ -886,5 +886,9 @@ bool gc_collect(Arena* arena, const GCRootSet* roots) {
   gc_sweep(arena);
   gc_promote_surviving_pages(arena);
   gc_remembered_set_clear(arena);
+  if (!gc_verify_remembered_set(arena)) {
+    assert(false);
+    return false;
+  }
   return true;
 }

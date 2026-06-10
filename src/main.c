@@ -186,8 +186,8 @@ static void test_object_field_mark(Arena* arena, size_t payload_size) {
   child = arena_alloc(arena, payload_size);
   assert(child != NULL);
 
-  parent->left = child;
-  parent->right = NULL;
+  assert(GC_STORE(arena, parent, left, child));
+  assert(GC_STORE(arena, parent, right, NULL));
 
   parent_page = arena_find_page(arena, parent);
   child_page = arena_find_page(arena, child);
@@ -238,10 +238,10 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
   child = arena_alloc(arena, payload_size);
   assert(child != NULL);
 
-  grandparent->left = parent;
-  grandparent->right = NULL;
-  parent->left = child;
-  parent->right = NULL;
+  assert(GC_STORE(arena, grandparent, left, parent));
+  assert(GC_STORE(arena, grandparent, right, NULL));
+  assert(GC_STORE(arena, parent, left, child));
+  assert(GC_STORE(arena, parent, right, NULL));
 
   grandparent_page = arena_find_page(arena, grandparent);
   parent_page = arena_find_page(arena, parent);
@@ -281,8 +281,8 @@ static void test_gc_forward_if_relocating(void) {
 
   original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
   assert(original != NULL);
-  original->left = NULL;
-  original->right = NULL;
+  assert(GC_STORE(&arena, original, left, NULL));
+  assert(GC_STORE(&arena, original, right, NULL));
 
   source_page = arena_find_page(&arena, original);
   assert(source_page != NULL);
@@ -327,8 +327,8 @@ static void test_gc_collect_evacuates_sparse_page(void) {
   child = arena_alloc(&arena, 1024);
   assert(child != NULL);
 
-  original_root->left = child;
-  original_root->right = NULL;
+  assert(GC_STORE(&arena, original_root, left, child));
+  assert(GC_STORE(&arena, original_root, right, NULL));
 
   source_page = arena_find_page(&arena, original_root);
   assert(source_page != NULL);
@@ -561,8 +561,8 @@ static void test_minor_collect_old_to_young(void) {
 
   parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
   assert(parent != NULL);
-  parent->left = NULL;
-  parent->right = NULL;
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
 
   parent_root = parent;
   root_array[0].slot = &parent_root;
@@ -638,8 +638,8 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
 
   parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
   assert(parent != NULL);
-  parent->left = NULL;
-  parent->right = NULL;
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
 
   parent_root = parent;
   root_array[0].slot = &parent_root;
@@ -656,7 +656,7 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
 
   child = arena_alloc(&arena, 1024);
   assert(child != NULL);
-  parent->left = child;
+  assert(GC_STORE(&arena, parent, left, child));
 
   assert(gc_collect_young(&arena, &roots));
 
@@ -702,8 +702,8 @@ static void test_write_barrier_failure_rolls_back_slot(void) {
 
   parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
   assert(parent != NULL);
-  parent->left = NULL;
-  parent->right = NULL;
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
 
   parent_page = arena_find_page(&arena, parent);
   assert(parent_page != NULL);
@@ -744,8 +744,8 @@ static void test_write_barrier_failure_preserves_existing_slot(void) {
   old_child = arena_alloc(&arena, 1024);
   assert(old_child != NULL);
 
-  parent->left = old_child;
-  parent->right = NULL;
+  assert(GC_STORE(&arena, parent, left, old_child));
+  assert(GC_STORE(&arena, parent, right, NULL));
 
   parent_page = arena_find_page(&arena, parent);
   assert(parent_page != NULL);
@@ -767,6 +767,43 @@ static void test_write_barrier_failure_preserves_existing_slot(void) {
       (int) stored,
       parent->left,
       old_child,
+      arena.remembered_set.count);
+
+  arena_destroy(&arena);
+}
+
+static void test_remembered_set_verification_detects_missing_barrier(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr child;
+  Page* parent_page;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
+
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  page_promote(parent_page);
+
+  child = arena_alloc(&arena, 1024);
+  assert(child != NULL);
+  assert(arena_find_page(&arena, child)->age == GC_PAGE_AGE_YOUNG);
+
+  /* Intentional bypass: this test proves debug verification catches it. */
+  parent->left = child;
+  EXPECT_TRUE(!gc_verify_remembered_set(&arena));
+
+  assert(GC_STORE(&arena, parent, left, child));
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+  EXPECT_TRUE(arena.remembered_set.count == 1);
+
+  printf("missing_barrier_verify_test parent=%p child=%p remembered=%zu\n",
+      (void*) parent,
+      child,
       arena.remembered_set.count);
 
   arena_destroy(&arena);
@@ -834,8 +871,8 @@ static void test_registered_root_survives_full_collect(void) {
 
   original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
   assert(original != NULL);
-  original->left = NULL;
-  original->right = NULL;
+  assert(GC_STORE(&arena, original, left, NULL));
+  assert(GC_STORE(&arena, original, right, NULL));
   root = original;
 
   source_page = arena_find_page(&arena, root);
@@ -901,8 +938,8 @@ static void test_handle_survives_minor_collect(void) {
 
   original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
   assert(original != NULL);
-  original->left = NULL;
-  original->right = NULL;
+  assert(GC_STORE(&arena, original, left, NULL));
+  assert(GC_STORE(&arena, original, right, NULL));
   source_page = arena_find_page(&arena, original);
   assert(source_page != NULL);
 
@@ -1045,13 +1082,13 @@ static void test_failed_relocation_preserves_destination_page(void) {
 
   first_root = (Pair*) arena_alloc_traced(&arena, sizeof(*first_root), &pair_trace);
   assert(first_root != NULL);
-  first_root->left = NULL;
-  first_root->right = NULL;
+  assert(GC_STORE(&arena, first_root, left, NULL));
+  assert(GC_STORE(&arena, first_root, right, NULL));
 
   second_root = (Pair*) arena_alloc_traced(&arena, sizeof(*second_root), &pair_trace);
   assert(second_root != NULL);
-  second_root->left = NULL;
-  second_root->right = NULL;
+  assert(GC_STORE(&arena, second_root, left, NULL));
+  assert(GC_STORE(&arena, second_root, right, NULL));
 
   source_page = arena_find_page(&arena, first_root);
   assert(source_page != NULL);
@@ -1172,6 +1209,7 @@ int main(void) {
   test_minor_promoted_parent_remembers_young_child();
   test_write_barrier_failure_rolls_back_slot();
   test_write_barrier_failure_preserves_existing_slot();
+  test_remembered_set_verification_detects_missing_barrier();
   test_root_registration_failure_and_deduplication();
   test_registered_root_survives_full_collect();
   test_unregistered_root_allows_collection();
