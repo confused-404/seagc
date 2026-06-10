@@ -11,11 +11,20 @@ enum {
   GC_RELOCATION_LIVE_RATIO_SHIFT = 2,
 };
 
-typedef struct PageList {
-  Page** items;
+typedef struct PageSnapshot {
+  Page* page;
+  u8* top;
+  size_t used;
+  PageState state;
+  PageAge age;
+  LiveMap livemap;
+} PageSnapshot;
+
+typedef struct PageSnapshotList {
+  PageSnapshot* items;
   size_t count;
   size_t capacity;
-} PageList;
+} PageSnapshotList;
 
 typedef struct RelocationPlan {
   const ObjectHeader* old_header;
@@ -62,19 +71,19 @@ static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) 
   return NULL;
 }
 
-static bool page_list_push(PageList* list, Page* page) {
-  Page** items;
+static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
+  PageSnapshot* items;
   size_t new_capacity;
 
   for (size_t i = 0; i < list->count; i++) {
-    if (list->items[i] == page) {
+    if (list->items[i].page == page) {
       return true;
     }
   }
 
   if (list->count == list->capacity) {
     new_capacity = list->capacity == 0 ? 8 : list->capacity * 2;
-    items = (Page**) realloc(list->items, new_capacity * sizeof(list->items[0]));
+    items = (PageSnapshot*) realloc(list->items, new_capacity * sizeof(list->items[0]));
     if (items == NULL) {
       return false;
     }
@@ -83,11 +92,17 @@ static bool page_list_push(PageList* list, Page* page) {
     list->capacity = new_capacity;
   }
 
-  list->items[list->count++] = page;
+  list->items[list->count].page = page;
+  list->items[list->count].top = page->top;
+  list->items[list->count].used = page->used;
+  list->items[list->count].state = page->state;
+  list->items[list->count].age = page->age;
+  list->items[list->count].livemap = page->livemap;
+  list->count++;
   return true;
 }
 
-static void page_list_reset(PageList* list) {
+static void page_snapshot_list_reset(PageSnapshotList* list) {
   free(list->items);
   list->items = NULL;
   list->count = 0;
@@ -177,6 +192,7 @@ static bool gc_forward_live_object(
     Page* source_page,
     size_t old_offset,
     bool age_young_object,
+    PageSnapshotList* destinations,
     void** new_payload_out,
     Page** destination_page_out) {
   const size_t header_size = arena_make_layout(0).header_size;
@@ -195,6 +211,10 @@ static bool gc_forward_live_object(
       plan.layout.total_size,
       plan.destination_age);
   if (destination_page == NULL) {
+    return false;
+  }
+
+  if (destinations != NULL && !page_snapshot_list_push(destinations, destination_page)) {
     return false;
   }
 
@@ -251,7 +271,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
     return object;
   }
 
-  if (!gc_forward_live_object(arena, source_page, old_offset, false, &new_payload, NULL)) {
+  if (!gc_forward_live_object(arena, source_page, old_offset, false, NULL, &new_payload, NULL)) {
     return NULL;
   }
 
@@ -288,25 +308,40 @@ void* gc_forward_existing_if_relocating(Arena* arena, void* object) {
   return entry->new_payload;
 }
 
-static void gc_cleanup_failed_relocation(Arena* arena, Page* source_page, PageList* destinations) {
-  (void) arena;
-
+static void gc_cleanup_failed_relocation(
+    Arena* arena,
+    Page* source_page,
+    PageState source_state,
+    Page* young_active_page,
+    Page* old_active_page,
+    PageSnapshotList* destinations) {
   for (size_t i = 0; i < destinations->count; i++) {
-    Page* page = destinations->items[i];
-    page_reset(page, GC_PAGE_FREE, GC_PAGE_AGE_YOUNG);
+    PageSnapshot* snapshot = &destinations->items[i];
+    Page* page = snapshot->page;
+
+    page->top = snapshot->top;
+    page->used = snapshot->used;
+    page->state = snapshot->state;
+    page->age = snapshot->age;
+    page->livemap = snapshot->livemap;
   }
 
-  source_page->state = GC_PAGE_FULL;
+  source_page->state = source_state;
+  arena->young_active_page = young_active_page;
+  arena->old_active_page = old_active_page;
   page_clear_forwarding(source_page);
-  page_list_reset(destinations);
+  page_snapshot_list_reset(destinations);
 }
 
 static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_objects) {
-  PageList destinations = {
+  PageSnapshotList destinations = {
     .items = NULL,
     .count = 0,
     .capacity = 0,
   };
+  PageState source_state = source_page->state;
+  Page* young_active_page = arena->young_active_page;
+  Page* old_active_page = arena->old_active_page;
   source_page->state = GC_PAGE_RELOCATING;
   assert(source_page->forwarding_count == 0);
 
@@ -322,22 +357,26 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
           source_page,
           old_offset,
           age_young_objects,
+          &destinations,
           (void**) &new_payload,
           &destination_page)) {
-        gc_cleanup_failed_relocation(arena, source_page, &destinations);
+        gc_cleanup_failed_relocation(
+            arena,
+            source_page,
+            source_state,
+            young_active_page,
+            old_active_page,
+            &destinations);
         return false;
       }
 
-      if (destination_page != NULL && !page_list_push(&destinations, destination_page)) {
-        gc_cleanup_failed_relocation(arena, source_page, &destinations);
-        return false;
-      }
+      (void) destination_page;
     }
 
     cursor += header->total_size;
   }
 
-  page_list_reset(&destinations);
+  page_snapshot_list_reset(&destinations);
   return true;
 }
 
