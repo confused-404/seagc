@@ -691,6 +691,128 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   arena_destroy(&arena);
 }
 
+static void test_minor_repair_young_to_young_fields(void) {
+  Arena arena;
+  Pair* parent;
+  Pair* child;
+  Pair* original_parent;
+  GCPtr parent_root;
+  Page* parent_source_page;
+  Page* child_source_page;
+  GCRoot root_array[1];
+  GCRootSet roots;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  original_parent = parent;
+  child = (Pair*) arena_alloc_traced(&arena, sizeof(*child), &pair_trace);
+  assert(child != NULL);
+  assert(GC_STORE(&arena, parent, left, child));
+  assert(GC_STORE(&arena, parent, right, NULL));
+  assert(GC_STORE(&arena, child, left, NULL));
+  assert(GC_STORE(&arena, child, right, NULL));
+
+  parent_source_page = arena_find_page(&arena, parent);
+  child_source_page = arena_find_page(&arena, child);
+  assert(parent_source_page != NULL);
+  assert(child_source_page != NULL);
+
+  parent_root = parent;
+  root_array[0].slot = &parent_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_collect_young(&arena, &roots));
+
+  parent = (Pair*) parent_root;
+  child = (Pair*) parent->left;
+  EXPECT_TRUE(parent != NULL);
+  EXPECT_TRUE(child != NULL);
+  EXPECT_TRUE(parent != original_parent);
+  EXPECT_TRUE(parent_source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(child_source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(arena_find_page(&arena, parent)->age == GC_PAGE_AGE_YOUNG);
+  EXPECT_TRUE(arena_find_page(&arena, child)->age == GC_PAGE_AGE_YOUNG);
+  EXPECT_TRUE(child->left == NULL);
+  EXPECT_TRUE(child->right == NULL);
+
+  printf("minor_young_repair_test parent=%p child=%p remembered=%zu\n",
+      (void*) parent,
+      (void*) child,
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_minor_repairs_remembered_slot_only_in_old_object(void) {
+  Arena arena;
+  Pair* parent;
+  Pair* stable_old_child;
+  GCPtr parent_root;
+  GCPtr stable_root;
+  GCPtr young_child;
+  GCPtr original_young_child;
+  Page* parent_page;
+  Page* stable_page;
+  GCRoot root_array[2];
+  GCRootSet roots;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  stable_old_child = (Pair*) arena_alloc_traced(&arena, sizeof(*stable_old_child), &pair_trace);
+  assert(stable_old_child != NULL);
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, stable_old_child));
+  assert(GC_STORE(&arena, stable_old_child, left, NULL));
+  assert(GC_STORE(&arena, stable_old_child, right, NULL));
+
+  parent_root = parent;
+  stable_root = stable_old_child;
+  root_array[0].slot = &parent_root;
+  root_array[1].slot = &stable_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_collect(&arena, &roots));
+  parent = (Pair*) parent_root;
+  stable_old_child = (Pair*) stable_root;
+  parent_page = arena_find_page(&arena, parent);
+  stable_page = arena_find_page(&arena, stable_old_child);
+  assert(parent_page != NULL);
+  assert(stable_page != NULL);
+  assert(parent_page->age == GC_PAGE_AGE_OLD);
+  assert(stable_page->age == GC_PAGE_AGE_OLD);
+
+  young_child = arena_alloc(&arena, 128);
+  assert(young_child != NULL);
+  original_young_child = young_child;
+  assert(GC_STORE(&arena, parent, left, young_child));
+  EXPECT_TRUE(parent->right == stable_old_child);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+
+  assert(gc_collect_young(&arena, &roots));
+
+  parent = (Pair*) parent_root;
+  EXPECT_TRUE(parent_page->state != GC_PAGE_FREE);
+  EXPECT_TRUE(stable_page->state != GC_PAGE_FREE);
+  EXPECT_TRUE(parent->left != NULL);
+  EXPECT_TRUE(parent->left != original_young_child);
+  EXPECT_TRUE(parent->right == stable_old_child);
+  EXPECT_TRUE(arena_find_page(&arena, parent->left)->age == GC_PAGE_AGE_YOUNG);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+
+  printf("minor_old_slot_repair_test parent_page=%d stable_page=%d remembered=%zu\n",
+      arena_page_index(&arena, parent_page),
+      arena_page_index(&arena, stable_page),
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
 static void test_write_barrier_failure_rolls_back_slot(void) {
   Arena arena;
   Pair* parent;
@@ -1364,6 +1486,8 @@ int main(void) {
   test_promote_surviving_page();
   test_minor_collect_old_to_young();
   test_minor_promoted_parent_remembers_young_child();
+  test_minor_repair_young_to_young_fields();
+  test_minor_repairs_remembered_slot_only_in_old_object();
   test_write_barrier_failure_rolls_back_slot();
   test_write_barrier_failure_preserves_existing_slot();
   test_remembered_set_verification_detects_missing_barrier();

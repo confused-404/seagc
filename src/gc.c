@@ -635,6 +635,59 @@ bool gc_repair_all_objects(Arena* arena) {
   return state.ok;
 }
 
+static bool gc_repair_relocated_young_objects(Arena* arena) {
+  RepairVisitState state = {
+    .arena = arena,
+    .ok = true,
+  };
+
+  for (size_t i = 0; state.ok && i < arena->page_count; i++) {
+    Page* source_page = &arena->pages[i];
+
+    if (source_page->state != GC_PAGE_RELOCATING ||
+        source_page->age != GC_PAGE_AGE_YOUNG) {
+      continue;
+    }
+
+    for (size_t j = 0; state.ok && j < source_page->forwarding_count; j++) {
+      void* payload = source_page->forwarding[j].new_payload;
+
+      state.ok = arena_visit_object_fields(
+          arena,
+          payload,
+          gc_repair_field_visitor,
+          &state);
+    }
+  }
+
+  return state.ok;
+}
+
+static bool gc_repair_remembered_slots(Arena* arena) {
+  for (size_t page_index = 0; page_index < arena->page_count; page_index++) {
+    Page* page = &arena->pages[page_index];
+    RememberedSet* remembered_set = &page->remembered_set;
+
+    if (!gc_page_can_own_remembered_slots(page)) {
+      continue;
+    }
+
+    for (size_t i = 0; i < remembered_set->count; i++) {
+      GCPtr* slot = (GCPtr*) remembered_set->slots[i];
+
+      if (!gc_slot_belongs_to_page(page, slot)) {
+        continue;
+      }
+
+      if (!gc_repair_pointer(arena, slot)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 static bool mark_object_fields_into_worklist(
     Arena* arena,
     void* payload_pointer,
@@ -910,7 +963,11 @@ bool gc_collect_young(Arena* arena, const GCRootSet* roots) {
     return false;
   }
 
-  if (!gc_repair_all_objects(arena)) {
+  if (!gc_repair_relocated_young_objects(arena)) {
+    return false;
+  }
+
+  if (!gc_repair_remembered_slots(arena)) {
     return false;
   }
 
