@@ -177,6 +177,10 @@ void arena_destroy(Arena* arena) {
   arena->remembered_set.slots = NULL;
   arena->remembered_set.count = 0;
   arena->remembered_set.capacity = 0;
+  free(arena->roots.slots);
+  arena->roots.slots = NULL;
+  arena->roots.count = 0;
+  arena->roots.capacity = 0;
   arena->page_count = 0;
   arena->young_active_page = NULL;
   arena->old_active_page = NULL;

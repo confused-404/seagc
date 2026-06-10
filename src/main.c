@@ -761,6 +761,168 @@ static void test_write_barrier_failure_preserves_existing_slot(void) {
   arena_destroy(&arena);
 }
 
+static void test_root_registration_failure_and_deduplication(void) {
+  Arena arena;
+  Arena handle_arena;
+  GCHandle handle;
+  GCPtr root = NULL;
+  bool registered;
+  bool duplicate_registered;
+  bool unregistered;
+  bool second_unregistered;
+  bool handle_initialized;
+
+  arena_init(&arena);
+
+  gc_test_fail_next_root_grow();
+  registered = gc_root_register(&arena, &root);
+  EXPECT_TRUE(!registered);
+  EXPECT_TRUE(arena.roots.count == 0);
+
+  registered = gc_root_register(&arena, &root);
+  EXPECT_TRUE(registered);
+  EXPECT_TRUE(arena.roots.count == 1);
+
+  duplicate_registered = gc_root_register(&arena, &root);
+  EXPECT_TRUE(duplicate_registered);
+  EXPECT_TRUE(arena.roots.count == 1);
+
+  unregistered = gc_root_unregister(&arena, &root);
+  EXPECT_TRUE(unregistered);
+  EXPECT_TRUE(arena.roots.count == 0);
+
+  second_unregistered = gc_root_unregister(&arena, &root);
+  EXPECT_TRUE(!second_unregistered);
+  EXPECT_TRUE(arena.roots.count == 0);
+
+  arena_init(&handle_arena);
+  gc_test_fail_next_root_grow();
+  handle_initialized = gc_handle_init(&handle_arena, &handle, NULL);
+  EXPECT_TRUE(!handle_initialized);
+  EXPECT_TRUE(!handle.active);
+  EXPECT_TRUE(handle_arena.roots.count == 0);
+
+  printf("root_registry_test registered=%d duplicate=%d unregistered=%d handle=%d roots=%zu\n",
+      (int) registered,
+      (int) duplicate_registered,
+      (int) unregistered,
+      (int) handle_initialized,
+      arena.roots.count);
+
+  arena_destroy(&handle_arena);
+  arena_destroy(&arena);
+}
+
+static void test_registered_root_survives_full_collect(void) {
+  Arena arena;
+  Pair* original;
+  GCPtr root;
+  Page* source_page;
+
+  arena_init(&arena);
+
+  original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
+  assert(original != NULL);
+  original->left = NULL;
+  original->right = NULL;
+  root = original;
+
+  source_page = arena_find_page(&arena, root);
+  assert(source_page != NULL);
+  assert(gc_root_register(&arena, &root));
+
+  assert(gc_collect(&arena, NULL));
+
+  EXPECT_TRUE(root != NULL);
+  EXPECT_TRUE(root != original);
+  EXPECT_TRUE(source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(arena_find_page(&arena, root) != NULL);
+  EXPECT_TRUE(((Pair*) root)->left == NULL);
+  EXPECT_TRUE(((Pair*) root)->right == NULL);
+
+  printf("registered_root_collect_test old=%p new=%p source_state=%d roots=%zu\n",
+      (void*) original,
+      root,
+      (int) source_page->state,
+      arena.roots.count);
+
+  arena_destroy(&arena);
+}
+
+static void test_unregistered_root_allows_collection(void) {
+  Arena arena;
+  GCPtr root;
+  Page* source_page;
+
+  arena_init(&arena);
+
+  root = arena_alloc(&arena, 1024);
+  assert(root != NULL);
+  source_page = arena_find_page(&arena, root);
+  assert(source_page != NULL);
+
+  assert(gc_root_register(&arena, &root));
+  assert(gc_root_unregister(&arena, &root));
+  assert(gc_collect(&arena, NULL));
+
+  EXPECT_TRUE(source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(arena_find_page(&arena, root) == NULL);
+  EXPECT_TRUE(arena.roots.count == 0);
+
+  printf("unregistered_root_collect_test root=%p source_state=%d roots=%zu\n",
+      root,
+      (int) source_page->state,
+      arena.roots.count);
+
+  arena_destroy(&arena);
+}
+
+static void test_handle_survives_minor_collect(void) {
+  Arena arena;
+  GCHandle handle;
+  Pair* original;
+  Pair* moved;
+  Page* source_page;
+  const ObjectHeader* header;
+  const size_t header_size = arena_make_layout(0).header_size;
+
+  arena_init(&arena);
+
+  original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
+  assert(original != NULL);
+  original->left = NULL;
+  original->right = NULL;
+  source_page = arena_find_page(&arena, original);
+  assert(source_page != NULL);
+
+  assert(gc_handle_init(&arena, &handle, original));
+  assert(gc_collect_young(&arena, NULL));
+
+  moved = (Pair*) gc_handle_get(&handle);
+  EXPECT_TRUE(moved != NULL);
+  EXPECT_TRUE(moved != original);
+  EXPECT_TRUE(source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(arena_find_page(&arena, moved) != NULL);
+  EXPECT_TRUE(moved->left == NULL);
+  EXPECT_TRUE(moved->right == NULL);
+  header = get_header_pointer(moved, header_size);
+  EXPECT_TRUE(header->age == 1);
+
+  EXPECT_TRUE(gc_handle_set(&handle, NULL));
+  EXPECT_TRUE(gc_handle_get(&handle) == NULL);
+  EXPECT_TRUE(gc_handle_destroy(&handle));
+  EXPECT_TRUE(!handle.active);
+  EXPECT_TRUE(arena.roots.count == 0);
+
+  printf("handle_minor_collect_test old=%p new=%p source_state=%d roots=%zu\n",
+      (void*) original,
+      (void*) moved,
+      (int) source_page->state,
+      arena.roots.count);
+
+  arena_destroy(&arena);
+}
+
 static void test_oversized_allocation_is_rejected(void) {
   Arena arena;
   void* payload;
@@ -941,6 +1103,10 @@ int main(void) {
   test_minor_promoted_parent_remembers_young_child();
   test_write_barrier_failure_rolls_back_slot();
   test_write_barrier_failure_preserves_existing_slot();
+  test_root_registration_failure_and_deduplication();
+  test_registered_root_survives_full_collect();
+  test_unregistered_root_allows_collection();
+  test_handle_survives_minor_collect();
   test_oversized_allocation_is_rejected();
   test_oversized_allocation_preserves_existing_arena();
   test_invalid_trace_descriptor_is_rejected();

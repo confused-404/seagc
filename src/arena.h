@@ -12,12 +12,19 @@ typedef struct RememberedSet {
   size_t capacity;
 } RememberedSet;
 
+typedef struct RootRegistry {
+  void*** slots;
+  size_t count;
+  size_t capacity;
+} RootRegistry;
+
 typedef struct Arena {
   Page pages[GC_MAX_PAGES];
   size_t page_count;
   Page* young_active_page;
   Page* old_active_page;
   RememberedSet remembered_set;
+  RootRegistry roots;
 } Arena;
 
 typedef struct AllocLayout {

@@ -41,6 +41,7 @@ typedef enum GCCollectPhase {
 } GCCollectPhase;
 
 static bool gc_test_fail_remembered_grow;
+static bool gc_test_fail_root_grow;
 
 bool gc_verify_relocation(Arena* arena);
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots);
@@ -50,6 +51,10 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots);
 
 void gc_test_fail_next_remembered_grow(void) {
   gc_test_fail_remembered_grow = true;
+}
+
+void gc_test_fail_next_root_grow(void) {
+  gc_test_fail_root_grow = true;
 }
 
 static bool gc_object_is_young(Arena* arena, const void* object) {
@@ -130,6 +135,130 @@ static bool gc_remember_slot(Arena* arena, GCPtr* slot) {
   }
 
   remembered_set->slots[remembered_set->count++] = (void**) slot;
+  return true;
+}
+
+static bool gc_root_registry_contains(const Arena* arena, GCPtr* slot) {
+  const RootRegistry* roots = &arena->roots;
+
+  for (size_t i = 0; i < roots->count; i++) {
+    if (roots->slots[i] == (void**) slot) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool gc_root_register(Arena* arena, GCPtr* slot) {
+  RootRegistry* roots = &arena->roots;
+  void*** slots;
+  size_t new_capacity;
+
+  if (slot == NULL) {
+    return false;
+  }
+
+  if (gc_root_registry_contains(arena, slot)) {
+    return true;
+  }
+
+  if (roots->count == roots->capacity) {
+    if (gc_test_fail_root_grow) {
+      gc_test_fail_root_grow = false;
+      return false;
+    }
+
+    if (roots->capacity > SIZE_MAX / 2) {
+      return false;
+    }
+
+    new_capacity = roots->capacity == 0 ? 16 : roots->capacity * 2;
+    if (new_capacity > SIZE_MAX / sizeof(roots->slots[0])) {
+      return false;
+    }
+
+    slots = (void***) realloc(roots->slots, new_capacity * sizeof(roots->slots[0]));
+    if (slots == NULL) {
+      return false;
+    }
+
+    roots->slots = slots;
+    roots->capacity = new_capacity;
+  }
+
+  roots->slots[roots->count++] = (void**) slot;
+  return true;
+}
+
+bool gc_root_unregister(Arena* arena, GCPtr* slot) {
+  RootRegistry* roots = &arena->roots;
+
+  if (slot == NULL) {
+    return false;
+  }
+
+  for (size_t i = 0; i < roots->count; i++) {
+    if (roots->slots[i] == (void**) slot) {
+      roots->slots[i] = roots->slots[--roots->count];
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool gc_handle_init(Arena* arena, GCHandle* handle, GCPtr value) {
+  if (handle == NULL) {
+    return false;
+  }
+
+  handle->arena = arena;
+  handle->slot = value;
+  handle->active = false;
+
+  if (arena == NULL) {
+    return false;
+  }
+
+  if (!gc_root_register(arena, &handle->slot)) {
+    handle->arena = NULL;
+    handle->slot = NULL;
+    return false;
+  }
+
+  handle->active = true;
+  return true;
+}
+
+bool gc_handle_destroy(GCHandle* handle) {
+  bool removed;
+
+  if (handle == NULL || !handle->active || handle->arena == NULL) {
+    return false;
+  }
+
+  removed = gc_root_unregister(handle->arena, &handle->slot);
+  handle->arena = NULL;
+  handle->slot = NULL;
+  handle->active = false;
+  return removed;
+}
+
+GCPtr gc_handle_get(const GCHandle* handle) {
+  if (handle == NULL || !handle->active) {
+    return NULL;
+  }
+
+  return handle->slot;
+}
+
+bool gc_handle_set(GCHandle* handle, GCPtr value) {
+  if (handle == NULL || !handle->active) {
+    return false;
+  }
+
+  handle->slot = value;
   return true;
 }
 
@@ -395,13 +524,17 @@ static void gc_repair_visit(Page* page, const ObjectHeader* header, void* payloa
 }
 
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots) {
-  if (roots == NULL) {
-    return true;
+  if (roots != NULL) {
+    for (size_t i = 0; i < roots->count; i++) {
+      const GCRoot* root = &roots->roots[i];
+      if (!gc_repair_pointer(arena, root->slot)) {
+        return false;
+      }
+    }
   }
 
-  for (size_t i = 0; i < roots->count; i++) {
-    const GCRoot* root = &roots->roots[i];
-    if (!gc_repair_pointer(arena, root->slot)) {
+  for (size_t i = 0; i < arena->roots.count; i++) {
+    if (!gc_repair_pointer(arena, (GCPtr*) arena->roots.slots[i])) {
       return false;
     }
   }
@@ -436,6 +569,18 @@ static bool mark_object_fields_into_worklist(
       &state);
 }
 
+static bool gc_mark_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* worklist) {
+  if (slot == NULL || *slot == NULL) {
+    return true;
+  }
+
+  if (arena_mark_object(arena, *slot)) {
+    return mark_worklist_push(worklist, *slot);
+  }
+
+  return true;
+}
+
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
   MarkWorklist worklist = {
     .items = NULL,
@@ -444,23 +589,19 @@ bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
   };
   bool ok = true;
 
-  if (roots == NULL) {
-    return true;
-  }
+  if (roots != NULL) {
+    for (size_t i = 0; i < roots->count; i++) {
+      const GCRoot* root = &roots->roots[i];
 
-  for (size_t i = 0; i < roots->count; i++) {
-    const GCRoot* root = &roots->roots[i];
-
-    if (root->slot == NULL || *root->slot == NULL) {
-      continue;
-    }
-
-    if (arena_mark_object(arena, *root->slot)) {
-      if (!mark_worklist_push(&worklist, *root->slot)) {
+      if (!gc_mark_root_slot(arena, root->slot, &worklist)) {
         ok = false;
         break;
       }
     }
+  }
+
+  for (size_t i = 0; ok && i < arena->roots.count; i++) {
+    ok = gc_mark_root_slot(arena, (GCPtr*) arena->roots.slots[i], &worklist);
   }
 
   while (ok && worklist.count > 0) {
@@ -489,6 +630,18 @@ static bool mark_young_object_fields_into_worklist(
       &state);
 }
 
+static bool gc_mark_young_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* worklist) {
+  if (slot == NULL || *slot == NULL || !gc_object_is_young(arena, *slot)) {
+    return true;
+  }
+
+  if (arena_mark_object(arena, *slot)) {
+    return mark_worklist_push(worklist, *slot);
+  }
+
+  return true;
+}
+
 static void gc_clear_young_marks(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     if (arena->pages[i].age == GC_PAGE_AGE_YOUNG) {
@@ -509,17 +662,15 @@ static bool gc_mark_young_roots(Arena* arena, const GCRootSet* roots) {
     for (size_t i = 0; i < roots->count; i++) {
       const GCRoot* root = &roots->roots[i];
 
-      if (root->slot == NULL || *root->slot == NULL || !gc_object_is_young(arena, *root->slot)) {
-        continue;
-      }
-
-      if (arena_mark_object(arena, *root->slot)) {
-        if (!mark_worklist_push(&worklist, *root->slot)) {
-          ok = false;
-          break;
-        }
+      if (!gc_mark_young_root_slot(arena, root->slot, &worklist)) {
+        ok = false;
+        break;
       }
     }
+  }
+
+  for (size_t i = 0; ok && i < arena->roots.count; i++) {
+    ok = gc_mark_young_root_slot(arena, (GCPtr*) arena->roots.slots[i], &worklist);
   }
 
   for (size_t i = 0; ok && i < arena->remembered_set.count; i++) {
