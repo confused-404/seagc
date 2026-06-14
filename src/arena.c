@@ -106,6 +106,16 @@ static PageAge arena_space_age(PageSpace space) {
   }
 }
 
+static void arena_policy_init(ArenaGCPolicy* policy) {
+  policy->nursery_page_target = GC_NURSERY_PAGE_TRIGGER;
+  policy->max_nursery_pages = GC_MAX_PAGES / 4u;
+  if (policy->max_nursery_pages < policy->nursery_page_target) {
+    policy->max_nursery_pages = policy->nursery_page_target;
+  }
+  policy->promotion_age = GC_PROMOTION_AGE;
+  policy->full_page_watermark = GC_GC_PAGE_WATERMARK;
+}
+
 Page* arena_add_page(
     Arena* arena,
     size_t capacity,
@@ -198,6 +208,7 @@ Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age) {
 
 void arena_init(Arena* arena) {
   memset(arena, 0, sizeof(*arena));
+  arena_policy_init(&arena->policy);
 }
 
 void arena_destroy(Arena* arena) {
@@ -215,6 +226,8 @@ void arena_destroy(Arena* arena) {
   arena->nursery_active_page = NULL;
   arena->survivor_active_page = NULL;
   arena->old_active_page = NULL;
+  memset(&arena->stats, 0, sizeof(arena->stats));
+  arena_policy_init(&arena->policy);
 }
 
 static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const AllocLayout* alloc_layout) {
@@ -253,6 +266,7 @@ static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const A
 
   page->top += alloc_layout->total_size;
   page->used = alloc_layout->total_size;
+  arena->stats.allocated_bytes[GC_SPACE_LARGE] += alloc_layout->total_size;
   return (void*) (top + alloc_layout->header_size);
 }
 
@@ -275,6 +289,7 @@ static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const 
 
   page->top += alloc_layout->total_size;
   page->used += alloc_layout->total_size;
+  arena->stats.allocated_bytes[GC_SPACE_NURSERY] += alloc_layout->total_size;
   return (void*) (top + alloc_layout->header_size);
 }
 
@@ -309,7 +324,7 @@ void* arena_alloc(Arena* arena, size_t payload_size) {
 ArenaCollectionTrigger arena_collection_trigger(const Arena* arena) {
   size_t nursery_pages = 0;
 
-  if ((GC_MAX_PAGES - arena->page_count) <= GC_GC_PAGE_WATERMARK) {
+  if ((GC_MAX_PAGES - arena->page_count) <= arena->policy.full_page_watermark) {
     return GC_TRIGGER_FULL;
   }
 
@@ -321,7 +336,7 @@ ArenaCollectionTrigger arena_collection_trigger(const Arena* arena) {
     }
   }
 
-  if (nursery_pages >= GC_NURSERY_PAGE_TRIGGER) {
+  if (nursery_pages >= arena->policy.nursery_page_target) {
     return GC_TRIGGER_YOUNG;
   }
 
@@ -330,6 +345,14 @@ ArenaCollectionTrigger arena_collection_trigger(const Arena* arena) {
 
 bool arena_should_collect(const Arena* arena) {
   return arena_collection_trigger(arena) != GC_TRIGGER_NONE;
+}
+
+const ArenaGCPolicy* gc_policy(const Arena* arena) {
+  return &arena->policy;
+}
+
+const ArenaGCStats* gc_stats(const Arena* arena) {
+  return &arena->stats;
 }
 
 Page* arena_find_page(Arena* arena, const void* payload_pointer) {
@@ -444,6 +467,22 @@ void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_
       visitor(page, header, payload, user_data);
       cursor += header->total_size;
     }
+  }
+}
+
+void arena_stats_recompute_live(Arena* arena) {
+  for (size_t i = 0; i <= (size_t) GC_SPACE_LARGE; i++) {
+    arena->stats.live_bytes[i] = 0;
+  }
+
+  for (size_t i = 0; i < arena->page_count; i++) {
+    const Page* page = &arena->pages[i];
+
+    if (page->state == GC_PAGE_FREE || page->state == GC_PAGE_RELOCATING) {
+      continue;
+    }
+
+    arena->stats.live_bytes[page->space] += page->used;
   }
 }
 

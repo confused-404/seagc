@@ -154,6 +154,7 @@ static bool gc_page_is_relocation_candidate(const Page* page) {
 }
 
 static RelocationPlan gc_make_relocation_plan(
+    Arena* arena,
     Page* source_page,
     size_t old_offset,
     bool age_young_object) {
@@ -172,7 +173,7 @@ static RelocationPlan gc_make_relocation_plan(
   if (age_young_object && source_page->age == GC_PAGE_AGE_YOUNG) {
     next_age = plan.old_header->age == UINT8_MAX ? UINT8_MAX : (u8) (plan.old_header->age + 1);
     plan.object_age = next_age;
-    if (next_age >= GC_PROMOTION_AGE) {
+    if (next_age >= arena->policy.promotion_age) {
       plan.destination_age = GC_PAGE_AGE_OLD;
       plan.destination_space = GC_SPACE_OLD;
     } else {
@@ -206,7 +207,7 @@ static bool gc_forward_live_object(
     void** new_payload_out,
     Page** destination_page_out) {
   const size_t header_size = arena_make_layout(0).header_size;
-  const RelocationPlan plan = gc_make_relocation_plan(source_page, old_offset, age_young_object);
+  RelocationPlan plan = gc_make_relocation_plan(arena, source_page, old_offset, age_young_object);
   Page* destination_page;
   ObjectHeader* new_header;
   u8* new_top;
@@ -220,6 +221,18 @@ static bool gc_forward_live_object(
       arena,
       plan.layout.total_size,
       plan.destination_space);
+  if (destination_page == NULL &&
+      age_young_object &&
+      source_page->age == GC_PAGE_AGE_YOUNG &&
+      plan.destination_space == GC_SPACE_SURVIVOR) {
+    plan.destination_age = GC_PAGE_AGE_OLD;
+    plan.destination_space = GC_SPACE_OLD;
+    plan.object_age = arena->policy.promotion_age;
+    destination_page = gc_acquire_relocation_destination_page(
+        arena,
+        plan.layout.total_size,
+        plan.destination_space);
+  }
   if (destination_page == NULL) {
     return false;
   }
@@ -245,6 +258,10 @@ static bool gc_forward_live_object(
   new_header->age = plan.object_age;
   destination_page->top += plan.layout.total_size;
   destination_page->used += plan.layout.total_size;
+  arena->stats.copied_bytes += plan.layout.total_size;
+  if (source_page->age == GC_PAGE_AGE_YOUNG && plan.destination_age == GC_PAGE_AGE_OLD) {
+    arena->stats.promoted_bytes += plan.layout.total_size;
+  }
 
   *new_payload_out = (void*) (new_top + header_size);
   if (destination_page_out != NULL) {
@@ -325,6 +342,7 @@ static void gc_cleanup_failed_relocation(
     Page* nursery_active_page,
     Page* survivor_active_page,
     Page* old_active_page,
+    const ArenaGCStats* stats,
     PageSnapshotList* destinations) {
   for (size_t i = 0; i < destinations->count; i++) {
     PageSnapshot* snapshot = &destinations->items[i];
@@ -342,6 +360,7 @@ static void gc_cleanup_failed_relocation(
   arena->nursery_active_page = nursery_active_page;
   arena->survivor_active_page = survivor_active_page;
   arena->old_active_page = old_active_page;
+  arena->stats = *stats;
   page_clear_forwarding(source_page);
   page_snapshot_list_reset(destinations);
 }
@@ -356,6 +375,7 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
   Page* nursery_active_page = arena->nursery_active_page;
   Page* survivor_active_page = arena->survivor_active_page;
   Page* old_active_page = arena->old_active_page;
+  ArenaGCStats stats = arena->stats;
   source_page->state = GC_PAGE_RELOCATING;
   assert(source_page->forwarding_count == 0);
 
@@ -381,6 +401,7 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
             nursery_active_page,
             survivor_active_page,
             old_active_page,
+            &stats,
             &destinations);
         return false;
       }

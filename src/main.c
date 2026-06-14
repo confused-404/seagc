@@ -1088,6 +1088,58 @@ static void test_remembered_set_stress_minor_relocation_repair(void) {
   arena_destroy(&arena);
 }
 
+static void test_full_collect_rebuilds_remembered_sets(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr parent_root;
+  GCPtr child_root;
+  GCRoot root_array[2];
+  GCRootSet roots;
+
+  arena_init(&arena);
+
+  parent = (Pair*) arena_alloc_traced(&arena, sizeof(*parent), &pair_trace);
+  assert(parent != NULL);
+  assert(GC_STORE(&arena, parent, left, NULL));
+  assert(GC_STORE(&arena, parent, right, NULL));
+  parent_root = parent;
+  root_array[0].slot = &parent_root;
+  roots.roots = root_array;
+  roots.count = 1;
+
+  assert(gc_collect(&arena, &roots));
+  parent = (Pair*) parent_root;
+  EXPECT_TRUE(arena_find_page(&arena, parent)->age == GC_PAGE_AGE_OLD);
+
+  child_root = arena_alloc(&arena, 128);
+  assert(child_root != NULL);
+  EXPECT_TRUE(arena_find_page(&arena, child_root)->age == GC_PAGE_AGE_YOUNG);
+  assert(GC_STORE(&arena, parent, left, child_root));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+
+  root_array[0].slot = &parent_root;
+  root_array[1].slot = &child_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_collect(&arena, &roots));
+  parent = (Pair*) parent_root;
+  child_root = parent->left;
+  EXPECT_TRUE(child_root != NULL);
+  EXPECT_TRUE(arena_find_page(&arena, child_root)->age == GC_PAGE_AGE_OLD);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+  EXPECT_TRUE(gc_stats(&arena)->full_collections == 2);
+  EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_EXPLICIT_FULL);
+
+  printf("full_remembered_rebuild_test remembered=%zu full=%zu reason=%d\n",
+      gc_remembered_set_count(&arena),
+      gc_stats(&arena)->full_collections,
+      (int) gc_stats(&arena)->last_collection_reason);
+
+  arena_destroy(&arena);
+}
+
 static void test_root_registration_failure_and_deduplication(void) {
   Arena arena;
   Arena handle_arena;
@@ -1399,11 +1451,14 @@ static void test_failed_relocation_preserves_destination_page(void) {
   EXPECT_TRUE(!evacuated);
   EXPECT_TRUE(destination_page->state == GC_PAGE_ACTIVE);
   EXPECT_TRUE(arena_find_page(&arena, unrelated_root) == destination_page);
+  EXPECT_TRUE(gc_stats(&arena)->copied_bytes == 0);
+  EXPECT_TRUE(gc_stats(&arena)->promoted_bytes == 0);
 
-  printf("relocation_failure_test evacuated=%d destination_state=%d unrelated_page=%d\n",
+  printf("relocation_failure_test evacuated=%d destination_state=%d unrelated_page=%d copied=%zu\n",
       (int) evacuated,
       (int) destination_page->state,
-      arena_page_index(&arena, arena_find_page(&arena, unrelated_root)));
+      arena_page_index(&arena, arena_find_page(&arena, unrelated_root)),
+      gc_stats(&arena)->copied_bytes);
 
   arena_destroy(&arena);
 }
@@ -1413,8 +1468,10 @@ static void test_collection_triggers_and_gc_alloc_young(void) {
   void* payload;
   Page* owner;
   size_t page_count_at_trigger;
+  size_t initial_nursery_target;
 
   arena_init(&arena);
+  initial_nursery_target = gc_policy(&arena)->nursery_page_target;
 
   while (arena_collection_trigger(&arena) != GC_TRIGGER_YOUNG) {
     payload = arena_alloc(&arena, 1024);
@@ -1429,16 +1486,21 @@ static void test_collection_triggers_and_gc_alloc_young(void) {
   EXPECT_TRUE(payload != NULL);
   EXPECT_TRUE(arena.page_count == page_count_at_trigger);
   EXPECT_TRUE(arena_collection_trigger(&arena) == GC_TRIGGER_NONE);
+  EXPECT_TRUE(gc_stats(&arena)->minor_collections == 1);
+  EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_ALLOCATION_NURSERY_PRESSURE);
+  EXPECT_TRUE(gc_policy(&arena)->nursery_page_target > initial_nursery_target);
 
   owner = arena_find_page(&arena, payload);
   EXPECT_TRUE(owner != NULL);
   EXPECT_TRUE(owner->space == GC_SPACE_NURSERY);
   EXPECT_TRUE(owner->age == GC_PAGE_AGE_YOUNG);
 
-  printf("trigger_young_test page_count=%zu owner_page=%d trigger=%d\n",
+  printf("trigger_young_test page_count=%zu owner_page=%d trigger=%d minor=%zu target=%zu\n",
       arena.page_count,
       arena_page_index(&arena, owner),
-      (int) arena_collection_trigger(&arena));
+      (int) arena_collection_trigger(&arena),
+      gc_stats(&arena)->minor_collections,
+      gc_policy(&arena)->nursery_page_target);
 
   arena_destroy(&arena);
 }
@@ -1459,9 +1521,16 @@ static void test_full_trigger_takes_precedence(void) {
   EXPECT_TRUE(trigger == GC_TRIGGER_FULL);
   EXPECT_TRUE(arena_should_collect(&arena));
 
-  printf("trigger_full_test page_count=%zu trigger=%d\n",
+  payload = gc_alloc(&arena, GC_LARGE_OBJECT_SIZE + 1024, NULL);
+  EXPECT_TRUE(payload != NULL);
+  EXPECT_TRUE(gc_stats(&arena)->full_collections == 1);
+  EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_OLD_SPACE_PRESSURE);
+
+  printf("trigger_full_test page_count=%zu trigger=%d full=%zu reason=%d\n",
       arena.page_count,
-      (int) trigger);
+      (int) trigger,
+      gc_stats(&arena)->full_collections,
+      (int) gc_stats(&arena)->last_collection_reason);
 
   arena_destroy(&arena);
 }
@@ -1494,6 +1563,7 @@ int main(void) {
   test_remembered_sets_are_page_local_and_deduplicated();
   test_remembered_set_prunes_stale_slots();
   test_remembered_set_stress_minor_relocation_repair();
+  test_full_collect_rebuilds_remembered_sets();
   test_root_registration_failure_and_deduplication();
   test_registered_root_survives_full_collect();
   test_unregistered_root_allows_collection();
