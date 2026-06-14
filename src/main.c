@@ -7,38 +7,6 @@
 #include "gc.h"
 #include "macros.h"
 
-static int arena_page_index(const Arena* arena, const Page* page) {
-  size_t i;
-
-  if (page == NULL) {
-    return -1;
-  }
-
-  for (i = 0; i < arena->page_count; i++) {
-    if (&arena->pages[i] == page) {
-      return (int) i;
-    }
-  }
-
-  return -1;
-}
-
-static void arena_dump_pages(const Arena* arena) {
-  size_t i;
-
-  printf("page_count=%zu nursery_active_page=%d survivor_active_page=%d old_active_page=%d\n",
-      arena->page_count,
-      arena_page_index(arena, arena->nursery_active_page),
-      arena_page_index(arena, arena->survivor_active_page),
-      arena_page_index(arena, arena->old_active_page));
-
-  for (i = 0; i < arena->page_count; i++) {
-    const Page* page = &arena->pages[i];
-    printf("page[%zu] state=%d age=%d space=%d used=%zu capacity=%zu\n",
-        i, (int) page->state, (int) page->age, (int) page->space, page->used, page->capacity);
-  }
-}
-
 typedef struct ObjectIterationStats {
   size_t objects;
   size_t bytes;
@@ -60,6 +28,12 @@ static const TraceDescriptor pair_trace = {
 };
 
 static size_t test_failures;
+static size_t test_count;
+static size_t failed_test_count;
+
+#define TEST_LOG(...) \
+  do { \
+  } while (0)
 
 #define EXPECT_TRUE(condition) \
   do { \
@@ -67,6 +41,31 @@ static size_t test_failures;
       printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); \
       test_failures++; \
     } \
+  } while (0)
+
+#define RUN_TEST(name, call) \
+  do { \
+    const size_t failures_before = test_failures; \
+    test_count++; \
+    printf("[ RUN  ] %s\n", (name)); \
+    call; \
+    if (test_failures == failures_before) { \
+      printf("[  OK  ] %s\n", (name)); \
+    } else { \
+      failed_test_count++; \
+      printf("[ FAIL ] %s (%zu failure%s)\n", \
+          (name), \
+          test_failures - failures_before, \
+          test_failures - failures_before == 1u ? "" : "s"); \
+    } \
+  } while (0)
+
+#define RUN_ARENA_TEST(name, call) \
+  do { \
+    Arena arena; \
+    arena_init(&arena); \
+    RUN_TEST((name), (call)); \
+    arena_destroy(&arena); \
   } while (0)
 
 static void count_object(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
@@ -121,7 +120,7 @@ static void test_page_livemap_mark(Arena* arena, size_t payload_size) {
   assert(owner->livemap.live_objects == 1);
   assert(owner->livemap.live_bytes == header->total_size);
 
-  printf("livemap_test payload=%p header=%p page_offset=%zu owner_page=%d live_objects=%zu live_bytes=%zu\n",
+  TEST_LOG("livemap_test payload=%p header=%p page_offset=%zu owner_page=%d live_objects=%zu live_bytes=%zu\n",
       payload,
       (const void*) header,
       page_offset,
@@ -163,7 +162,7 @@ static void test_root_mark(Arena* arena, size_t payload_size) {
   assert(owner->livemap.live_objects == 1);
   assert(owner->livemap.live_bytes == header->total_size);
 
-  printf("root_mark_test root=%p owner_page=%d live_objects=%zu live_bytes=%zu\n",
+  TEST_LOG("root_mark_test root=%p owner_page=%d live_objects=%zu live_bytes=%zu\n",
       rooted,
       arena_page_index(arena, owner),
       owner->livemap.live_objects,
@@ -203,7 +202,7 @@ static void test_object_field_mark(Arena* arena, size_t payload_size) {
 
   assert(livemap_is_live(&child_page->livemap, child_page_offset));
 
-  printf("field_mark_test parent=%p child=%p parent_page=%d child_page=%d\n",
+  TEST_LOG("field_mark_test parent=%p child=%p parent_page=%d child_page=%d\n",
       (void*) parent,
       child,
       arena_page_index(arena, parent_page),
@@ -262,7 +261,7 @@ static void test_transitive_root_mark(Arena* arena, size_t payload_size) {
 
   assert(livemap_is_live(&child_page->livemap, child_page_offset));
 
-  printf("transitive_mark_test grandparent=%p parent=%p child=%p\n",
+  TEST_LOG("transitive_mark_test grandparent=%p parent=%p child=%p\n",
       (void*) grandparent,
       (void*) parent,
       child);
@@ -299,7 +298,7 @@ static void test_gc_forward_if_relocating(void) {
   forwarded_again = (Pair*) gc_forward_if_relocating(&arena, original);
   assert(forwarded_again == forwarded);
 
-  printf("forward_object_test old=%p new=%p page=%d\n",
+  TEST_LOG("forward_object_test old=%p new=%p page=%d\n",
       (void*) original,
       (void*) forwarded,
       arena_page_index(&arena, arena_find_page(&arena, forwarded)));
@@ -353,7 +352,7 @@ static void test_gc_collect_evacuates_sparse_page(void) {
   assert(arena_find_page(&arena, moved_root->left) != source_page);
   assert(source_page->state == GC_PAGE_FREE);
 
-  printf("collect_relocate_test old_page=%d new_page=%d root=%p child=%p\n",
+  TEST_LOG("collect_relocate_test old_page=%d new_page=%d root=%p child=%p\n",
       arena_page_index(&arena, source_page),
       arena_page_index(&arena, destination_page),
       (void*) moved_root,
@@ -390,7 +389,7 @@ static void test_reuse_free_normal_page(void) {
     assert(arena.page_count == original_page_count);
   }
 
-  printf("reuse_page_test page=%zu page_count=%zu\n",
+  TEST_LOG("reuse_page_test page=%zu page_count=%zu\n",
       (size_t) 0,
       arena.page_count);
 
@@ -440,7 +439,7 @@ static void test_sweep_dead_normal_pages(void) {
     assert(arena.page_count == page_count_after_alloc);
   }
 
-  printf("sweep_test dead_page=%d page_count=%zu\n",
+  TEST_LOG("sweep_test dead_page=%d page_count=%zu\n",
       arena_page_index(&arena, dead_page),
       arena.page_count);
 
@@ -479,7 +478,7 @@ static void test_sweep_and_reuse_large_page(void) {
   assert(large_page->state == GC_PAGE_LARGE);
   assert(arena.page_count == page_count_after_alloc);
 
-  printf("large_reuse_test page=%d page_count=%zu capacity=%zu\n",
+  TEST_LOG("large_reuse_test page=%d page_count=%zu capacity=%zu\n",
       arena_page_index(&arena, large_page),
       arena.page_count,
       large_page->capacity);
@@ -532,7 +531,7 @@ static void test_promote_surviving_page(void) {
   assert(next_page->age == GC_PAGE_AGE_YOUNG);
   assert(next_page->space == GC_SPACE_NURSERY);
 
-  printf("promote_test old_page=%d new_page=%d old_age=%d new_age=%d\n",
+  TEST_LOG("promote_test old_page=%d new_page=%d old_age=%d new_age=%d\n",
       arena_page_index(&arena, owner_page),
       arena_page_index(&arena, next_page),
       (int) owner_page->age,
@@ -614,7 +613,7 @@ static void test_minor_collect_old_to_young(void) {
   assert(header->age == GC_PROMOTION_AGE);
   assert(gc_remembered_set_count(&arena) == 0);
 
-  printf("minor_collect_test parent_page=%d child_page=%d promoted_page=%d remembered=%zu\n",
+  TEST_LOG("minor_collect_test parent_page=%d child_page=%d promoted_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       arena_page_index(&arena, child_page),
       arena_page_index(&arena, promoted_child_page),
@@ -683,7 +682,7 @@ static void test_minor_promoted_parent_remembers_young_child(void) {
   assert(child_page->space == GC_SPACE_OLD);
   assert(gc_remembered_set_count(&arena) == 0);
 
-  printf("minor_promotion_barrier_test parent_page=%d child_page=%d remembered=%zu\n",
+  TEST_LOG("minor_promotion_barrier_test parent_page=%d child_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       arena_page_index(&arena, child_page),
       gc_remembered_set_count(&arena));
@@ -738,7 +737,7 @@ static void test_minor_repair_young_to_young_fields(void) {
   EXPECT_TRUE(child->left == NULL);
   EXPECT_TRUE(child->right == NULL);
 
-  printf("minor_young_repair_test parent=%p child=%p remembered=%zu\n",
+  TEST_LOG("minor_young_repair_test parent=%p child=%p remembered=%zu\n",
       (void*) parent,
       (void*) child,
       gc_remembered_set_count(&arena));
@@ -805,7 +804,7 @@ static void test_minor_repairs_remembered_slot_only_in_old_object(void) {
   EXPECT_TRUE(arena_find_page(&arena, parent->left)->age == GC_PAGE_AGE_YOUNG);
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
 
-  printf("minor_old_slot_repair_test parent_page=%d stable_page=%d remembered=%zu\n",
+  TEST_LOG("minor_old_slot_repair_test parent_page=%d stable_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       arena_page_index(&arena, stable_page),
       gc_remembered_set_count(&arena));
@@ -842,7 +841,7 @@ static void test_write_barrier_failure_rolls_back_slot(void) {
   EXPECT_TRUE(parent->left == NULL);
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
 
-  printf("barrier_failure_test stored=%d slot=%p remembered=%zu\n",
+  TEST_LOG("barrier_failure_test stored=%d slot=%p remembered=%zu\n",
       (int) stored,
       parent->left,
       gc_remembered_set_count(&arena));
@@ -885,7 +884,7 @@ static void test_write_barrier_failure_preserves_existing_slot(void) {
   EXPECT_TRUE(parent->left == old_child);
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
 
-  printf("barrier_preserve_test stored=%d slot=%p old=%p remembered=%zu\n",
+  TEST_LOG("barrier_preserve_test stored=%d slot=%p old=%p remembered=%zu\n",
       (int) stored,
       parent->left,
       old_child,
@@ -923,7 +922,7 @@ static void test_remembered_set_verification_detects_missing_barrier(void) {
   EXPECT_TRUE(gc_verify_remembered_set(&arena));
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
 
-  printf("missing_barrier_verify_test parent=%p child=%p remembered=%zu\n",
+  TEST_LOG("missing_barrier_verify_test parent=%p child=%p remembered=%zu\n",
       (void*) parent,
       child,
       gc_remembered_set_count(&arena));
@@ -979,7 +978,7 @@ static void test_remembered_sets_are_page_local_and_deduplicated(void) {
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 2);
   EXPECT_TRUE(gc_verify_remembered_set(&arena));
 
-  printf("remembered_page_local_test first_page=%d second_page=%d remembered=%zu\n",
+  TEST_LOG("remembered_page_local_test first_page=%d second_page=%d remembered=%zu\n",
       arena_page_index(&arena, first_page),
       arena_page_index(&arena, second_page),
       gc_remembered_set_count(&arena));
@@ -1015,7 +1014,7 @@ static void test_remembered_set_prunes_stale_slots(void) {
   assert(gc_collect_young(&arena, NULL));
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
 
-  printf("remembered_prune_test parent_page=%d remembered=%zu\n",
+  TEST_LOG("remembered_prune_test parent_page=%d remembered=%zu\n",
       arena_page_index(&arena, parent_page),
       gc_remembered_set_count(&arena));
 
@@ -1081,7 +1080,7 @@ static void test_remembered_set_stress_minor_relocation_repair(void) {
   EXPECT_TRUE(gc_remembered_set_count(&arena) == 0);
   EXPECT_TRUE(gc_verify_remembered_set(&arena));
 
-  printf("remembered_stress_test parents=%d remembered=%zu\n",
+  TEST_LOG("remembered_stress_test parents=%d remembered=%zu\n",
       PARENT_COUNT,
       gc_remembered_set_count(&arena));
 
@@ -1132,7 +1131,7 @@ static void test_full_collect_rebuilds_remembered_sets(void) {
   EXPECT_TRUE(gc_stats(&arena)->full_collections == 2);
   EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_EXPLICIT_FULL);
 
-  printf("full_remembered_rebuild_test remembered=%zu full=%zu reason=%d\n",
+  TEST_LOG("full_remembered_rebuild_test remembered=%zu full=%zu reason=%d\n",
       gc_remembered_set_count(&arena),
       gc_stats(&arena)->full_collections,
       (int) gc_stats(&arena)->last_collection_reason);
@@ -1181,7 +1180,7 @@ static void test_root_registration_failure_and_deduplication(void) {
   EXPECT_TRUE(!handle.active);
   EXPECT_TRUE(handle_arena.roots.count == 0);
 
-  printf("root_registry_test registered=%d duplicate=%d unregistered=%d handle=%d roots=%zu\n",
+  TEST_LOG("root_registry_test registered=%d duplicate=%d unregistered=%d handle=%d roots=%zu\n",
       (int) registered,
       (int) duplicate_registered,
       (int) unregistered,
@@ -1219,7 +1218,7 @@ static void test_registered_root_survives_full_collect(void) {
   EXPECT_TRUE(((Pair*) root)->left == NULL);
   EXPECT_TRUE(((Pair*) root)->right == NULL);
 
-  printf("registered_root_collect_test old=%p new=%p source_state=%d roots=%zu\n",
+  TEST_LOG("registered_root_collect_test old=%p new=%p source_state=%d roots=%zu\n",
       (void*) original,
       root,
       (int) source_page->state,
@@ -1248,7 +1247,7 @@ static void test_unregistered_root_allows_collection(void) {
   EXPECT_TRUE(arena_find_page(&arena, root) == NULL);
   EXPECT_TRUE(arena.roots.count == 0);
 
-  printf("unregistered_root_collect_test root=%p source_state=%d roots=%zu\n",
+  TEST_LOG("unregistered_root_collect_test root=%p source_state=%d roots=%zu\n",
       root,
       (int) source_page->state,
       arena.roots.count);
@@ -1293,7 +1292,7 @@ static void test_handle_survives_minor_collect(void) {
   EXPECT_TRUE(!handle.active);
   EXPECT_TRUE(arena.roots.count == 0);
 
-  printf("handle_minor_collect_test old=%p new=%p source_state=%d roots=%zu\n",
+  TEST_LOG("handle_minor_collect_test old=%p new=%p source_state=%d roots=%zu\n",
       (void*) original,
       (void*) moved,
       (int) source_page->state,
@@ -1313,7 +1312,7 @@ static void test_oversized_allocation_is_rejected(void) {
   EXPECT_TRUE(payload == NULL);
   EXPECT_TRUE(arena.page_count == 0);
 
-  printf("oversized_alloc_test payload=%p page_count=%zu\n",
+  TEST_LOG("oversized_alloc_test payload=%p page_count=%zu\n",
       payload,
       arena.page_count);
 
@@ -1344,7 +1343,7 @@ static void test_oversized_allocation_preserves_existing_arena(void) {
   EXPECT_TRUE(arena.nursery_active_page == active_page);
   EXPECT_TRUE(active_page->used == used);
 
-  printf("oversized_preserve_test payload=%p page_count=%zu used=%zu\n",
+  TEST_LOG("oversized_preserve_test payload=%p page_count=%zu used=%zu\n",
       oversized_payload,
       arena.page_count,
       active_page->used);
@@ -1389,7 +1388,7 @@ static void test_invalid_trace_descriptor_is_rejected(void) {
   EXPECT_TRUE(valid_payload != NULL);
   EXPECT_TRUE(arena.page_count == 1);
 
-  printf("invalid_trace_test null_payload=%p bounds_payload=%p valid_payload=%p page_count=%zu\n",
+  TEST_LOG("invalid_trace_test null_payload=%p bounds_payload=%p valid_payload=%p page_count=%zu\n",
       null_offsets_payload,
       out_of_bounds_payload,
       valid_payload,
@@ -1454,7 +1453,7 @@ static void test_failed_relocation_preserves_destination_page(void) {
   EXPECT_TRUE(gc_stats(&arena)->copied_bytes == 0);
   EXPECT_TRUE(gc_stats(&arena)->promoted_bytes == 0);
 
-  printf("relocation_failure_test evacuated=%d destination_state=%d unrelated_page=%d copied=%zu\n",
+  TEST_LOG("relocation_failure_test evacuated=%d destination_state=%d unrelated_page=%d copied=%zu\n",
       (int) evacuated,
       (int) destination_page->state,
       arena_page_index(&arena, arena_find_page(&arena, unrelated_root)),
@@ -1495,7 +1494,7 @@ static void test_collection_triggers_and_gc_alloc_young(void) {
   EXPECT_TRUE(owner->space == GC_SPACE_NURSERY);
   EXPECT_TRUE(owner->age == GC_PAGE_AGE_YOUNG);
 
-  printf("trigger_young_test page_count=%zu owner_page=%d trigger=%d minor=%zu target=%zu\n",
+  TEST_LOG("trigger_young_test page_count=%zu owner_page=%d trigger=%d minor=%zu target=%zu\n",
       arena.page_count,
       arena_page_index(&arena, owner),
       (int) arena_collection_trigger(&arena),
@@ -1526,7 +1525,7 @@ static void test_full_trigger_takes_precedence(void) {
   EXPECT_TRUE(gc_stats(&arena)->full_collections == 1);
   EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_OLD_SPACE_PRESSURE);
 
-  printf("trigger_full_test page_count=%zu trigger=%d full=%zu reason=%d\n",
+  TEST_LOG("trigger_full_test page_count=%zu trigger=%d full=%zu reason=%d\n",
       arena.page_count,
       (int) trigger,
       gc_stats(&arena)->full_collections,
@@ -1535,83 +1534,84 @@ static void test_full_trigger_takes_precedence(void) {
   arena_destroy(&arena);
 }
 
-int main(void) {
+static void test_bulk_allocation_iteration(void) {
   Arena arena;
-  const size_t payload_size = 1024;
   ObjectIterationStats stats;
-
-  int i;
+  const size_t payload_size = 1024;
 
   arena_init(&arena);
-  test_page_livemap_mark(&arena, payload_size);
-  test_root_mark(&arena, payload_size);
-  test_object_field_mark(&arena, payload_size);
-  test_transitive_root_mark(&arena, payload_size);
-  test_gc_forward_if_relocating();
-  test_gc_collect_evacuates_sparse_page();
-  test_reuse_free_normal_page();
-  test_sweep_dead_normal_pages();
-  test_sweep_and_reuse_large_page();
-  test_promote_surviving_page();
-  test_minor_collect_old_to_young();
-  test_minor_promoted_parent_remembers_young_child();
-  test_minor_repair_young_to_young_fields();
-  test_minor_repairs_remembered_slot_only_in_old_object();
-  test_write_barrier_failure_rolls_back_slot();
-  test_write_barrier_failure_preserves_existing_slot();
-  test_remembered_set_verification_detects_missing_barrier();
-  test_remembered_sets_are_page_local_and_deduplicated();
-  test_remembered_set_prunes_stale_slots();
-  test_remembered_set_stress_minor_relocation_repair();
-  test_full_collect_rebuilds_remembered_sets();
-  test_root_registration_failure_and_deduplication();
-  test_registered_root_survives_full_collect();
-  test_unregistered_root_allows_collection();
-  test_handle_survives_minor_collect();
-  test_oversized_allocation_is_rejected();
-  test_oversized_allocation_preserves_existing_arena();
-  test_invalid_trace_descriptor_is_rejected();
-  test_failed_relocation_preserves_destination_page();
-  test_collection_triggers_and_gc_alloc_young();
-  test_full_trigger_takes_precedence();
 
-  for (i = 0; i < 1000; i++) {
-    void* t;
+  for (int i = 0; i < 1000; i++) {
+    void* payload = arena_alloc(&arena, payload_size);
+    assert(payload != NULL);
 
-    t = arena_alloc(&arena, payload_size);
-    assert(t != NULL);
-
-    if (i % 5 == 0) {
-      printf("alloc[%d] ptr=%p page_count=%zu nursery_active_page=%d survivor_active_page=%d old_active_page=%d\n",
-          i,
-          t,
-          arena.page_count,
-          arena_page_index(&arena, arena.nursery_active_page),
-          arena_page_index(&arena, arena.survivor_active_page),
-          arena_page_index(&arena, arena.old_active_page));
-    }
+    TEST_LOG("alloc[%d] ptr=%p page_count=%zu nursery_active_page=%d survivor_active_page=%d old_active_page=%d\n",
+        i,
+        payload,
+        arena.page_count,
+        arena_page_index(&arena, arena.nursery_active_page),
+        arena_page_index(&arena, arena.survivor_active_page),
+        arena_page_index(&arena, arena.old_active_page));
   }
-
-  arena_dump_pages(&arena);
 
   stats.objects = 0;
   stats.bytes = 0;
   arena_for_each_object(&arena, count_object, &stats);
-  printf("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
-  assert(stats.objects == 1007);
 
-  printf("pages: %zu\n", arena.page_count);
-  printf("nursery active page state: %d\n",
-      arena.nursery_active_page != NULL ? (int)arena.nursery_active_page->state : -1);
-  printf("survivor active page state: %d\n",
-      arena.survivor_active_page != NULL ? (int)arena.survivor_active_page->state : -1);
-  printf("old active page state: %d\n",
-      arena.old_active_page != NULL ? (int)arena.old_active_page->state : -1);
-  printf("should collect soon: %s\n", arena_should_collect(&arena) ? "yes" : "no");
+  TEST_LOG("iterated objects=%zu bytes=%zu\n", stats.objects, stats.bytes);
+  EXPECT_TRUE(stats.objects == 1000);
+  EXPECT_TRUE(stats.bytes == 1000u * arena_make_layout(payload_size).total_size);
+  EXPECT_TRUE(arena_should_collect(&arena));
 
   arena_destroy(&arena);
+}
+
+int main(void) {
+  const size_t payload_size = 1024;
+
+  RUN_ARENA_TEST("page livemap mark", test_page_livemap_mark(&arena, payload_size));
+  RUN_ARENA_TEST("root mark", test_root_mark(&arena, payload_size));
+  RUN_ARENA_TEST("object field mark", test_object_field_mark(&arena, payload_size));
+  RUN_ARENA_TEST("transitive root mark", test_transitive_root_mark(&arena, payload_size));
+  RUN_TEST("forward relocating object", test_gc_forward_if_relocating());
+  RUN_TEST("full collect evacuates sparse page", test_gc_collect_evacuates_sparse_page());
+  RUN_TEST("reuse free normal page", test_reuse_free_normal_page());
+  RUN_TEST("sweep dead normal pages", test_sweep_dead_normal_pages());
+  RUN_TEST("sweep and reuse large page", test_sweep_and_reuse_large_page());
+  RUN_TEST("promote surviving page", test_promote_surviving_page());
+  RUN_TEST("minor collect old to young", test_minor_collect_old_to_young());
+  RUN_TEST("minor promoted parent remembers child", test_minor_promoted_parent_remembers_young_child());
+  RUN_TEST("minor repairs young fields", test_minor_repair_young_to_young_fields());
+  RUN_TEST("minor repairs remembered old slot", test_minor_repairs_remembered_slot_only_in_old_object());
+  RUN_TEST("barrier failure rolls back slot", test_write_barrier_failure_rolls_back_slot());
+  RUN_TEST("barrier failure preserves slot", test_write_barrier_failure_preserves_existing_slot());
+  RUN_TEST(
+      "remembered verification detects missing barrier",
+      test_remembered_set_verification_detects_missing_barrier());
+  RUN_TEST("remembered sets are page local", test_remembered_sets_are_page_local_and_deduplicated());
+  RUN_TEST("remembered set prunes stale slots", test_remembered_set_prunes_stale_slots());
+  RUN_TEST("remembered set stress repair", test_remembered_set_stress_minor_relocation_repair());
+  RUN_TEST("full collect rebuilds remembered sets", test_full_collect_rebuilds_remembered_sets());
+  RUN_TEST("root registry failure and dedup", test_root_registration_failure_and_deduplication());
+  RUN_TEST("registered root survives full collect", test_registered_root_survives_full_collect());
+  RUN_TEST("unregistered root allows collection", test_unregistered_root_allows_collection());
+  RUN_TEST("handle survives minor collect", test_handle_survives_minor_collect());
+  RUN_TEST("oversized allocation rejected", test_oversized_allocation_is_rejected());
+  RUN_TEST("oversized allocation preserves arena", test_oversized_allocation_preserves_existing_arena());
+  RUN_TEST("invalid trace descriptor rejected", test_invalid_trace_descriptor_is_rejected());
+  RUN_TEST("failed relocation preserves destination", test_failed_relocation_preserves_destination_page());
+  RUN_TEST("allocation triggers young collect", test_collection_triggers_and_gc_alloc_young());
+  RUN_TEST("full trigger takes precedence", test_full_trigger_takes_precedence());
+  RUN_TEST("bulk allocation iteration", test_bulk_allocation_iteration());
+
+  printf("\nSummary: %zu tests, %zu failed test%s, %zu failed assertion%s\n",
+      test_count,
+      failed_test_count,
+      failed_test_count == 1u ? "" : "s",
+      test_failures,
+      test_failures == 1u ? "" : "s");
+
   if (test_failures > 0) {
-    printf("targeted failures=%zu\n", test_failures);
     return 1;
   }
 
