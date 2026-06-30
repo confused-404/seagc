@@ -112,6 +112,21 @@ static void page_snapshot_list_reset(PageSnapshotList* list) {
   list->capacity = 0;
 }
 
+static void page_snapshot_list_restore(PageSnapshotList* list) {
+  for (size_t i = 0; i < list->count; i++) {
+    PageSnapshot* snapshot = &list->items[i];
+    Page* page = snapshot->page;
+
+    page->top = snapshot->top;
+    page->used = snapshot->used;
+    page->state = snapshot->state;
+    page->age = snapshot->age;
+    page->space = snapshot->space;
+    page->livemap = snapshot->livemap;
+    page_clear_forwarding(page);
+  }
+}
+
 static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) {
   PageForwardingEntry* entries;
   size_t new_capacity;
@@ -335,47 +350,15 @@ void* gc_forward_existing_if_relocating(Arena* arena, void* object) {
   return entry->new_payload;
 }
 
-static void gc_cleanup_failed_relocation(
+static bool gc_evacuate_page(
     Arena* arena,
     Page* source_page,
-    PageState source_state,
-    Page* nursery_active_page,
-    Page* survivor_active_page,
-    Page* old_active_page,
-    const ArenaGCStats* stats,
-    PageSnapshotList* destinations) {
-  for (size_t i = 0; i < destinations->count; i++) {
-    PageSnapshot* snapshot = &destinations->items[i];
-    Page* page = snapshot->page;
-
-    page->top = snapshot->top;
-    page->used = snapshot->used;
-    page->state = snapshot->state;
-    page->age = snapshot->age;
-    page->space = snapshot->space;
-    page->livemap = snapshot->livemap;
+    bool age_young_objects,
+    PageSnapshotList* snapshots) {
+  if (!page_snapshot_list_push(snapshots, source_page)) {
+    return false;
   }
 
-  source_page->state = source_state;
-  arena->nursery_active_page = nursery_active_page;
-  arena->survivor_active_page = survivor_active_page;
-  arena->old_active_page = old_active_page;
-  arena->stats = *stats;
-  page_clear_forwarding(source_page);
-  page_snapshot_list_reset(destinations);
-}
-
-static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_objects) {
-  PageSnapshotList destinations = {
-    .items = NULL,
-    .count = 0,
-    .capacity = 0,
-  };
-  PageState source_state = source_page->state;
-  Page* nursery_active_page = arena->nursery_active_page;
-  Page* survivor_active_page = arena->survivor_active_page;
-  Page* old_active_page = arena->old_active_page;
-  ArenaGCStats stats = arena->stats;
   source_page->state = GC_PAGE_RELOCATING;
   assert(source_page->forwarding_count == 0);
 
@@ -391,18 +374,9 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
           source_page,
           old_offset,
           age_young_objects,
-          &destinations,
+          snapshots,
           (void**) &new_payload,
           &destination_page)) {
-        gc_cleanup_failed_relocation(
-            arena,
-            source_page,
-            source_state,
-            nursery_active_page,
-            survivor_active_page,
-            old_active_page,
-            &stats,
-            &destinations);
         return false;
       }
 
@@ -412,7 +386,6 @@ static bool gc_evacuate_page(Arena* arena, Page* source_page, bool age_young_obj
     cursor += header->total_size;
   }
 
-  page_snapshot_list_reset(&destinations);
   return true;
 }
 
@@ -477,6 +450,15 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   (void) roots;
 
   const size_t initial_page_count = arena->page_count;
+  PageSnapshotList snapshots = {
+    .items = NULL,
+    .count = 0,
+    .capacity = 0,
+  };
+  Page* nursery_active_page = arena->nursery_active_page;
+  Page* survivor_active_page = arena->survivor_active_page;
+  Page* old_active_page = arena->old_active_page;
+  ArenaGCStats stats = arena->stats;
 
   arena->nursery_active_page = NULL;
   arena->survivor_active_page = NULL;
@@ -489,16 +471,32 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
       continue;
     }
 
-    if (!gc_evacuate_page(arena, source_page, false)) {
+    if (!gc_evacuate_page(arena, source_page, false, &snapshots)) {
+      page_snapshot_list_restore(&snapshots);
+      page_snapshot_list_reset(&snapshots);
+      arena->nursery_active_page = nursery_active_page;
+      arena->survivor_active_page = survivor_active_page;
+      arena->old_active_page = old_active_page;
+      arena->stats = stats;
       return false;
     }
   }
 
+  page_snapshot_list_reset(&snapshots);
   return true;
 }
 
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
   const size_t initial_page_count = arena->page_count;
+  PageSnapshotList snapshots = {
+    .items = NULL,
+    .count = 0,
+    .capacity = 0,
+  };
+  Page* nursery_active_page = arena->nursery_active_page;
+  Page* survivor_active_page = arena->survivor_active_page;
+  Page* old_active_page = arena->old_active_page;
+  ArenaGCStats stats = arena->stats;
 
   (void) roots;
 
@@ -517,6 +515,16 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
     }
 
     if (source_page->state == GC_PAGE_LARGE) {
+      if (!page_snapshot_list_push(&snapshots, source_page)) {
+        page_snapshot_list_restore(&snapshots);
+        page_snapshot_list_reset(&snapshots);
+        arena->nursery_active_page = nursery_active_page;
+        arena->survivor_active_page = survivor_active_page;
+        arena->old_active_page = old_active_page;
+        arena->stats = stats;
+        return false;
+      }
+
       page_promote(source_page);
       source_page->space = GC_SPACE_LARGE;
       continue;
@@ -532,10 +540,17 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
       arena->old_active_page = NULL;
     }
 
-    if (!gc_evacuate_page(arena, source_page, true)) {
+    if (!gc_evacuate_page(arena, source_page, true, &snapshots)) {
+      page_snapshot_list_restore(&snapshots);
+      page_snapshot_list_reset(&snapshots);
+      arena->nursery_active_page = nursery_active_page;
+      arena->survivor_active_page = survivor_active_page;
+      arena->old_active_page = old_active_page;
+      arena->stats = stats;
       return false;
     }
   }
 
+  page_snapshot_list_reset(&snapshots);
   return true;
 }

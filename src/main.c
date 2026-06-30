@@ -1462,6 +1462,64 @@ static void test_failed_relocation_preserves_destination_page(void) {
   arena_destroy(&arena);
 }
 
+static void test_failed_multi_page_relocation_rolls_back_all_sources(void) {
+  Arena arena;
+  Pair* first_root;
+  Pair* second_root;
+  Page* first_page;
+  Page* second_page;
+  GCRoot root_array[2];
+  GCRootSet roots;
+  bool evacuated;
+
+  arena_init(&arena);
+
+  first_root = (Pair*) arena_alloc_traced(&arena, sizeof(*first_root), &pair_trace);
+  assert(first_root != NULL);
+  assert(GC_STORE(&arena, first_root, left, NULL));
+  assert(GC_STORE(&arena, first_root, right, NULL));
+  first_page = arena_find_page(&arena, first_root);
+  assert(first_page != NULL);
+
+  while (arena.nursery_active_page == first_page) {
+    void* filler = arena_alloc(&arena, 1024);
+    assert(filler != NULL);
+  }
+
+  second_root = (Pair*) arena_alloc_traced(&arena, sizeof(*second_root), &pair_trace);
+  assert(second_root != NULL);
+  assert(GC_STORE(&arena, second_root, left, NULL));
+  assert(GC_STORE(&arena, second_root, right, NULL));
+  second_page = arena_find_page(&arena, second_root);
+  assert(second_page != NULL);
+  assert(second_page != first_page);
+
+  root_array[0].slot = (GCPtr*) &first_root;
+  root_array[1].slot = (GCPtr*) &second_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_mark(&arena, &roots));
+  gc_test_fail_forwarding_after(1);
+  evacuated = gc_evacuate_sparse_pages(&arena, &roots);
+
+  EXPECT_TRUE(!evacuated);
+  EXPECT_TRUE(first_page->state != GC_PAGE_RELOCATING);
+  EXPECT_TRUE(second_page->state != GC_PAGE_RELOCATING);
+  EXPECT_TRUE(first_page->forwarding_count == 0);
+  EXPECT_TRUE(second_page->forwarding_count == 0);
+  EXPECT_TRUE(arena_find_page(&arena, first_root) == first_page);
+  EXPECT_TRUE(arena_find_page(&arena, second_root) == second_page);
+  EXPECT_TRUE(gc_stats(&arena)->copied_bytes == 0);
+
+  TEST_LOG("multi_relocation_failure_test first_state=%d second_state=%d copied=%zu\n",
+      (int) first_page->state,
+      (int) second_page->state,
+      gc_stats(&arena)->copied_bytes);
+
+  arena_destroy(&arena);
+}
+
 static void test_collection_triggers_and_gc_alloc_young(void) {
   Arena arena;
   void* payload;
@@ -1534,6 +1592,204 @@ static void test_full_trigger_takes_precedence(void) {
   arena_destroy(&arena);
 }
 
+static void test_old_allocation_minor_and_generic_slot_barrier(void) {
+  Arena arena;
+  Pair* parent;
+  GCPtr parent_root;
+  GCPtr child;
+  GCPtr original_child;
+  GCRoot root_array[1];
+  GCRootSet roots;
+  Page* parent_page;
+  Page* child_page;
+
+  arena_init(&arena);
+
+  parent = (Pair*) gc_alloc_old_traced(&arena, sizeof(*parent), &pair_trace, NULL);
+  assert(parent != NULL);
+  assert(GC_STORE_SLOT(&arena, parent, &parent->left, NULL));
+  assert(GC_STORE_SLOT(&arena, parent, &parent->right, NULL));
+
+  parent_page = arena_find_page(&arena, parent);
+  assert(parent_page != NULL);
+  EXPECT_TRUE(parent_page->age == GC_PAGE_AGE_OLD);
+  EXPECT_TRUE(parent_page->space == GC_SPACE_OLD);
+
+  parent_root = parent;
+  root_array[0].slot = &parent_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  child = gc_alloc(&arena, 128, &roots);
+  assert(child != NULL);
+  original_child = child;
+  child_page = arena_find_page(&arena, child);
+  assert(child_page != NULL);
+  EXPECT_TRUE(child_page->age == GC_PAGE_AGE_YOUNG);
+
+  assert(GC_STORE_SLOT(&arena, parent, &parent->left, child));
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+  EXPECT_TRUE(gc_verify_remembered_set(&arena));
+
+  assert(gc_collect_young(&arena, &roots));
+
+  parent = (Pair*) parent_root;
+  EXPECT_TRUE(parent != NULL);
+  EXPECT_TRUE(parent->left != NULL);
+  EXPECT_TRUE(parent->left != original_child);
+  EXPECT_TRUE(arena_find_page(&arena, parent)->age == GC_PAGE_AGE_OLD);
+  EXPECT_TRUE(arena_find_page(&arena, parent->left)->age == GC_PAGE_AGE_YOUNG);
+  EXPECT_TRUE(gc_remembered_set_count(&arena) == 1);
+
+  TEST_LOG("old_alloc_minor_test parent=%p child=%p remembered=%zu\n",
+      (void*) parent,
+      parent->left,
+      gc_remembered_set_count(&arena));
+
+  arena_destroy(&arena);
+}
+
+static void test_load_barrier_repairs_relocating_slot(void) {
+  Arena arena;
+  Pair* original;
+  GCPtr slot;
+  GCPtr loaded;
+  Page* source_page;
+  Page* loaded_page;
+
+  arena_init(&arena);
+
+  original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
+  assert(original != NULL);
+  assert(GC_STORE(&arena, original, left, NULL));
+  assert(GC_STORE(&arena, original, right, NULL));
+
+  source_page = arena_find_page(&arena, original);
+  assert(source_page != NULL);
+  source_page->state = GC_PAGE_RELOCATING;
+  slot = original;
+
+  loaded = GC_LOAD_SLOT(&arena, &slot);
+  loaded_page = arena_find_page(&arena, loaded);
+
+  EXPECT_TRUE(loaded != NULL);
+  EXPECT_TRUE(loaded != original);
+  EXPECT_TRUE(slot == loaded);
+  EXPECT_TRUE(loaded_page != NULL);
+  EXPECT_TRUE(loaded_page != source_page);
+  EXPECT_TRUE(((Pair*) loaded)->left == NULL);
+  EXPECT_TRUE(((Pair*) loaded)->right == NULL);
+  EXPECT_TRUE(source_page->forwarding_count == 1);
+
+  gc_finish_relocation(&arena);
+  gc_sweep(&arena);
+  EXPECT_TRUE(source_page->state == GC_PAGE_FREE);
+  EXPECT_TRUE(arena_find_page(&arena, loaded) == loaded_page);
+
+  TEST_LOG("load_barrier_test old=%p new=%p source_state=%d\n",
+      (void*) original,
+      loaded,
+      (int) source_page->state);
+
+  arena_destroy(&arena);
+}
+
+static void test_load_barrier_failure_keeps_stale_slot_visible(void) {
+  Arena arena;
+  Pair* original;
+  GCPtr slot;
+  GCPtr loaded;
+  Page* source_page;
+
+  arena_init(&arena);
+
+  original = (Pair*) arena_alloc_traced(&arena, sizeof(*original), &pair_trace);
+  assert(original != NULL);
+  assert(GC_STORE(&arena, original, left, NULL));
+  assert(GC_STORE(&arena, original, right, NULL));
+
+  source_page = arena_find_page(&arena, original);
+  assert(source_page != NULL);
+  source_page->state = GC_PAGE_RELOCATING;
+  slot = original;
+
+  gc_test_fail_forwarding_after(0);
+  loaded = GC_LOAD_SLOT(&arena, &slot);
+
+  EXPECT_TRUE(loaded == NULL);
+  EXPECT_TRUE(slot == original);
+  EXPECT_TRUE(source_page->forwarding_count == 0);
+
+  source_page->state = GC_PAGE_ACTIVE;
+
+  TEST_LOG("load_barrier_failure_test old=%p loaded=%p forwarding=%zu\n",
+      (void*) original,
+      loaded,
+      source_page->forwarding_count);
+
+  arena_destroy(&arena);
+}
+
+static void test_old_large_object_survives_minor_and_dies_in_full(void) {
+  Arena arena;
+  void* large;
+  Page* large_page;
+
+  arena_init(&arena);
+
+  large = gc_alloc_old(&arena, GC_LARGE_OBJECT_SIZE + 512u, NULL);
+  assert(large != NULL);
+  large_page = arena_find_page(&arena, large);
+  assert(large_page != NULL);
+  EXPECT_TRUE(large_page->state == GC_PAGE_LARGE);
+  EXPECT_TRUE(large_page->age == GC_PAGE_AGE_OLD);
+  EXPECT_TRUE(large_page->space == GC_SPACE_LARGE);
+
+  assert(gc_collect_young(&arena, NULL));
+  EXPECT_TRUE(large_page->state == GC_PAGE_LARGE);
+  EXPECT_TRUE(large_page->age == GC_PAGE_AGE_OLD);
+
+  assert(gc_collect(&arena, NULL));
+  EXPECT_TRUE(large_page->state == GC_PAGE_FREE);
+
+  TEST_LOG("old_large_test page_state=%d minor=%zu full=%zu\n",
+      (int) large_page->state,
+      gc_stats(&arena)->minor_collections,
+      gc_stats(&arena)->full_collections);
+
+  arena_destroy(&arena);
+}
+
+static void test_gc_alloc_recovers_from_exhausted_unrooted_pages(void) {
+  Arena arena;
+  void* payload;
+  size_t allocated_pages;
+
+  arena_init(&arena);
+
+  while (arena.page_count < GC_MAX_PAGES) {
+    payload = arena_alloc(&arena, GC_LARGE_OBJECT_SIZE + 1024u);
+    assert(payload != NULL);
+  }
+
+  allocated_pages = arena.page_count;
+  EXPECT_TRUE(arena_collection_trigger(&arena) == GC_TRIGGER_FULL);
+
+  payload = gc_alloc(&arena, GC_LARGE_OBJECT_SIZE + 512u, NULL);
+  EXPECT_TRUE(payload != NULL);
+  EXPECT_TRUE(allocated_pages == GC_MAX_PAGES);
+  EXPECT_TRUE(gc_stats(&arena)->full_collections == 1);
+  EXPECT_TRUE(gc_stats(&arena)->last_collection_reason == GC_REASON_OLD_SPACE_PRESSURE);
+  EXPECT_TRUE(arena_find_page(&arena, payload) != NULL);
+
+  TEST_LOG("alloc_retry_exhausted_test pages=%zu full=%zu payload=%p\n",
+      allocated_pages,
+      gc_stats(&arena)->full_collections,
+      payload);
+
+  arena_destroy(&arena);
+}
+
 static void test_bulk_allocation_iteration(void) {
   Arena arena;
   ObjectIterationStats stats;
@@ -1600,8 +1856,22 @@ int main(void) {
   RUN_TEST("oversized allocation preserves arena", test_oversized_allocation_preserves_existing_arena());
   RUN_TEST("invalid trace descriptor rejected", test_invalid_trace_descriptor_is_rejected());
   RUN_TEST("failed relocation preserves destination", test_failed_relocation_preserves_destination_page());
+  RUN_TEST(
+      "failed multi-page relocation rolls back",
+      test_failed_multi_page_relocation_rolls_back_all_sources());
   RUN_TEST("allocation triggers young collect", test_collection_triggers_and_gc_alloc_young());
   RUN_TEST("full trigger takes precedence", test_full_trigger_takes_precedence());
+  RUN_TEST(
+      "old allocation minor slot barrier",
+      test_old_allocation_minor_and_generic_slot_barrier());
+  RUN_TEST("load barrier repairs relocating slot", test_load_barrier_repairs_relocating_slot());
+  RUN_TEST(
+      "load barrier failure is explicit",
+      test_load_barrier_failure_keeps_stale_slot_visible());
+  RUN_TEST("old large object minor/full", test_old_large_object_survives_minor_and_dies_in_full());
+  RUN_TEST(
+      "gc alloc recovers exhausted pages",
+      test_gc_alloc_recovers_from_exhausted_unrooted_pages());
   RUN_TEST("bulk allocation iteration", test_bulk_allocation_iteration());
 
   printf("\nSummary: %zu tests, %zu failed test%s, %zu failed assertion%s\n",

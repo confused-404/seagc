@@ -23,6 +23,10 @@ typedef struct GCHandle {
 
 #define GC_STORE(arena, owner, field, value) \
   gc_store_pointer((arena), (owner), (GCPtr*) &(owner)->field, (GCPtr) (value))
+#define GC_STORE_SLOT(arena, owner, slot, value) \
+  gc_store_pointer((arena), (owner), (GCPtr*) (slot), (GCPtr) (value))
+#define GC_LOAD_SLOT(arena, slot) \
+  gc_load_pointer((arena), (GCPtr*) (slot))
 
 void* gc_alloc(Arena* arena, size_t payload_size, const GCRootSet* roots);
 void* gc_alloc_traced(
@@ -30,7 +34,14 @@ void* gc_alloc_traced(
     size_t payload_size,
     const TraceDescriptor* trace,
     const GCRootSet* roots);
+void* gc_alloc_old(Arena* arena, size_t payload_size, const GCRootSet* roots);
+void* gc_alloc_old_traced(
+    Arena* arena,
+    size_t payload_size,
+    const TraceDescriptor* trace,
+    const GCRootSet* roots);
 bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value);
+GCPtr gc_load_pointer(Arena* arena, GCPtr* slot);
 void gc_clear_marks(Arena* arena);
 bool gc_mark(Arena* arena, const GCRootSet* roots);
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots);
@@ -49,6 +60,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object);
 void* gc_forward_existing_if_relocating(Arena* arena, void* object);
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots);
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots);
+void gc_finish_relocation(Arena* arena);
 void gc_test_fail_next_remembered_grow(void);
 void gc_test_fail_next_root_grow(void);
 void gc_test_fail_forwarding_after(size_t successful_forwarding_entries);

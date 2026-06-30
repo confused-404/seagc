@@ -230,7 +230,11 @@ void arena_destroy(Arena* arena) {
   arena_policy_init(&arena->policy);
 }
 
-static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const AllocLayout* alloc_layout) {
+static void* arena_alloc_large(
+    Arena* arena,
+    const ObjectHeader* header,
+    const AllocLayout* alloc_layout,
+    PageAge age) {
   Page* page = NULL;
   u8* top;
   ObjectHeader* h_dest;
@@ -242,7 +246,7 @@ static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const A
         candidate->base != NULL &&
         candidate->capacity >= alloc_layout->total_size) {
       page = candidate;
-      page_reset(page, GC_PAGE_LARGE, GC_PAGE_AGE_YOUNG, GC_SPACE_LARGE);
+      page_reset(page, GC_PAGE_LARGE, age, GC_SPACE_LARGE);
       break;
     }
   }
@@ -252,7 +256,7 @@ static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const A
         arena,
         alloc_layout->total_size,
         GC_PAGE_LARGE,
-        GC_PAGE_AGE_YOUNG,
+        age,
         GC_SPACE_LARGE);
   }
 
@@ -270,7 +274,11 @@ static void* arena_alloc_large(Arena* arena, const ObjectHeader* header, const A
   return (void*) (top + alloc_layout->header_size);
 }
 
-static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const AllocLayout* alloc_layout) {
+static void* arena_alloc_normal(
+    Arena* arena,
+    const ObjectHeader* header,
+    const AllocLayout* alloc_layout,
+    PageSpace space) {
   Page* page;
   u8* top;
   ObjectHeader* h_dest;
@@ -278,7 +286,7 @@ static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const 
   page = arena_get_active_page_for_space(
       arena,
       alloc_layout->total_size,
-      GC_SPACE_NURSERY);
+      space);
   if (page == NULL) {
     return NULL;
   }
@@ -289,13 +297,18 @@ static void* arena_alloc_normal(Arena* arena, const ObjectHeader* header, const 
 
   page->top += alloc_layout->total_size;
   page->used += alloc_layout->total_size;
-  arena->stats.allocated_bytes[GC_SPACE_NURSERY] += alloc_layout->total_size;
+  arena->stats.allocated_bytes[space] += alloc_layout->total_size;
   return (void*) (top + alloc_layout->header_size);
 }
 
-void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace) {
+void* arena_alloc_traced_in_space(
+    Arena* arena,
+    size_t payload_size,
+    const TraceDescriptor* trace,
+    PageSpace space) {
   ObjectHeader header;
   AllocLayout alloc_layout;
+  PageAge age;
 
   if (!arena_make_layout_checked(payload_size, &alloc_layout)) {
     return NULL;
@@ -310,11 +323,22 @@ void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescripto
   header.trace = trace != NULL ? trace : &gc_trace_none;
   header.age = 0;
 
-  if (alloc_layout.total_size > GC_LARGE_OBJECT_SIZE) {
-    return arena_alloc_large(arena, &header, &alloc_layout);
+  if (space != GC_SPACE_NURSERY &&
+      space != GC_SPACE_SURVIVOR &&
+      space != GC_SPACE_OLD) {
+    return NULL;
   }
 
-  return arena_alloc_normal(arena, &header, &alloc_layout);
+  age = arena_space_age(space);
+  if (alloc_layout.total_size > GC_LARGE_OBJECT_SIZE) {
+    return arena_alloc_large(arena, &header, &alloc_layout, age);
+  }
+
+  return arena_alloc_normal(arena, &header, &alloc_layout, space);
+}
+
+void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace) {
+  return arena_alloc_traced_in_space(arena, payload_size, trace, GC_SPACE_NURSERY);
 }
 
 void* arena_alloc(Arena* arena, size_t payload_size) {
