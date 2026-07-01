@@ -95,3 +95,43 @@ make
 ```
 
 The executable runs smoke tests and prints collector state.
+
+## Benchmarks
+
+Build the benchmark executable separately from the smoke-test runner:
+
+```sh
+make bench
+make bench-smoke
+./bin/seagc_bench --quick
+./bin/seagc_bench --workload remembered --iterations 50000 --repeat 5 --csv
+```
+
+`make run-bench` runs the default benchmark suite.
+
+Useful options:
+
+- `--workload NAME` runs one workload, or `all` for the default suite.
+- `--iterations N`, `--repeat N`, and `--scale N` control run size.
+- `--live-set N` tunes promotion and mixed live handles.
+- `--churn N` tunes mixed-workload churn; `0` uses `--iterations`.
+- `--seed N` sets the deterministic mixed-workload sequence.
+- `--csv` prints machine-readable rows.
+- `--quick` runs a small smoke-sized benchmark suitable for local validation.
+- `--list` prints the workload names and descriptions.
+
+Reports include elapsed wall time, allocation counts and approximate bytes,
+allocation and MB/s throughput, minor and full collection deltas, final page
+counts by space, remembered slots, live bytes, and a checksum.
+
+Workloads:
+
+- `nursery`: short-lived nursery allocation throughput.
+- `graph`: pointer-rich object graph allocation and traversal with load
+  barriers.
+- `remembered`: old-to-young stores through public write barriers and
+  remembered-set pressure.
+- `promotion`: survivor pressure over repeated minor collections until promotion.
+- `large`: large-object allocation with explicit full collections.
+- `mixed`: configurable live set with deterministic allocation churn, pointer
+  stores, minor collections, and occasional large objects.
