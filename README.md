@@ -39,16 +39,19 @@ Not implemented:
 Normal allocations enter the nursery. Large allocations enter large-object pages,
 which start young for normal allocation and can be allocated old with
 `gc_alloc_old`. Objects that survive minor collection are copied to survivor
-pages with their header age incremented. Once an object reaches
-`GC_PROMOTION_AGE`, young evacuation promotes it to old pages. Live young large
-objects are promoted in place.
+pages with their header age incremented. `GC_PROMOTION_AGE` seeds the default
+promotion threshold; young evacuation promotes an object to old pages once it
+reaches the current `ArenaGCPolicy.promotion_age`. Live young large objects are
+promoted in place.
 
 `arena_collection_trigger` drives automatic collection before allocation:
 nursery page pressure triggers a minor collection, while low remaining page
 capacity triggers a full collection. If an allocation still fails, `gc_alloc`
 first retries after a minor collection and then after a full collection.
 `gc_alloc_old` skips nursery-pressure minor collection and uses full collection
-for old-space pressure or allocation failure.
+for old-space pressure or allocation failure. After each minor collection the
+policy adjusts the nursery page target based on survival and can lower the
+promotion age when promotion pressure is observed.
 
 Minor collection is precise: it clears young livemaps, marks young roots, marks
 young objects reachable from remembered old slots, evacuates live young pages,
@@ -77,6 +80,12 @@ with an existing or newly-created forwarding entry, and return `NULL` if
 forwarding a relocating object fails. SeaGC does not currently run relocation
 concurrently with mutators, so these load barriers are explicit API helpers
 rather than compiler- or hardware-enforced read barriers.
+
+`arena_alloc_traced_in_space` is the low-level allocation entry point for tests
+and GC internals that need to choose nursery, survivor, or old space directly.
+Most callers should use `gc_alloc`, `gc_alloc_traced`, `gc_alloc_old`, or
+`gc_alloc_old_traced` so allocation-pressure collection and retry behavior stays
+centralized.
 
 ## Build
 

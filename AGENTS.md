@@ -7,3 +7,5 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Makefile uses strict `-Werror` C99 flags.
 - Heap object pointer stores must use `GC_STORE`, `GC_STORE_SLOT`, or
   `gc_store_pointer` so old-to-young edges are recorded for minor collection.
+- Use `GC_LOAD_SLOT` or `gc_load_pointer` at API boundaries that may observe a
+  slot while relocation is in progress; they repair stale relocating pointers.
