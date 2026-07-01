@@ -86,6 +86,12 @@ Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age);
 Page* arena_get_active_page_for_space(Arena* arena, size_t size, PageSpace space);
 void* arena_alloc(Arena* arena, size_t payload_size);
 void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace);
+/* Low-level allocator for GC internals/tests that must choose a generation space. */
+void* arena_alloc_traced_in_space(
+    Arena* arena,
+    size_t payload_size,
+    const TraceDescriptor* trace,
+    PageSpace space);
 ArenaCollectionTrigger arena_collection_trigger(const Arena* arena);
 bool arena_should_collect(const Arena* arena);
 const ArenaGCPolicy* gc_policy(const Arena* arena);

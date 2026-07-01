@@ -616,6 +616,35 @@ void* gc_alloc_traced(
   return arena_alloc_traced(arena, payload_size, trace);
 }
 
+void* gc_alloc_old(Arena* arena, size_t payload_size, const GCRootSet* roots) {
+  return gc_alloc_old_traced(arena, payload_size, NULL, roots);
+}
+
+void* gc_alloc_old_traced(
+    Arena* arena,
+    size_t payload_size,
+    const TraceDescriptor* trace,
+    const GCRootSet* roots) {
+  void* payload;
+
+  if (arena_collection_trigger(arena) == GC_TRIGGER_FULL) {
+    if (!gc_collect_with_reason(arena, roots, GC_REASON_OLD_SPACE_PRESSURE)) {
+      return NULL;
+    }
+  }
+
+  payload = arena_alloc_traced_in_space(arena, payload_size, trace, GC_SPACE_OLD);
+  if (payload != NULL) {
+    return payload;
+  }
+
+  if (!gc_collect_with_reason(arena, roots, GC_REASON_ALLOCATION_FAILURE)) {
+    return NULL;
+  }
+
+  return arena_alloc_traced_in_space(arena, payload_size, trace, GC_SPACE_OLD);
+}
+
 bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
   Page* owner_page;
 
@@ -630,6 +659,30 @@ bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
 
   *slot = value;
   return true;
+}
+
+GCPtr gc_load_pointer(Arena* arena, GCPtr* slot) {
+  Page* value_page;
+  GCPtr value;
+  GCPtr forwarded;
+
+  if (slot == NULL || *slot == NULL) {
+    return NULL;
+  }
+
+  value = *slot;
+  forwarded = gc_forward_if_relocating(arena, value);
+  if (forwarded != NULL) {
+    *slot = forwarded;
+    return forwarded;
+  }
+
+  value_page = arena_find_page(arena, value);
+  if (value_page != NULL && value_page->state == GC_PAGE_RELOCATING) {
+    return NULL;
+  }
+
+  return value;
 }
 
 static void mark_worklist_destroy(MarkWorklist* worklist) {
