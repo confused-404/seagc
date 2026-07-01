@@ -1462,6 +1462,63 @@ static void test_failed_relocation_preserves_destination_page(void) {
   arena_destroy(&arena);
 }
 
+static void test_failed_relocation_releases_new_destination_page(void) {
+  Arena arena;
+  Pair* first_root;
+  Pair* second_root;
+  GCRoot root_array[2];
+  GCRootSet roots;
+  Page* source_page;
+  Page* active_page;
+  size_t page_count;
+  bool evacuated;
+
+  arena_init(&arena);
+
+  first_root = (Pair*) arena_alloc_traced(&arena, sizeof(*first_root), &pair_trace);
+  assert(first_root != NULL);
+  assert(GC_STORE(&arena, first_root, left, NULL));
+  assert(GC_STORE(&arena, first_root, right, NULL));
+
+  second_root = (Pair*) arena_alloc_traced(&arena, sizeof(*second_root), &pair_trace);
+  assert(second_root != NULL);
+  assert(GC_STORE(&arena, second_root, left, NULL));
+  assert(GC_STORE(&arena, second_root, right, NULL));
+
+  source_page = arena_find_page(&arena, first_root);
+  assert(source_page != NULL);
+  assert(source_page == arena_find_page(&arena, second_root));
+
+  active_page = arena.nursery_active_page;
+  page_count = arena.page_count;
+  assert(page_count == 1);
+
+  root_array[0].slot = (GCPtr*) &first_root;
+  root_array[1].slot = (GCPtr*) &second_root;
+  roots.roots = root_array;
+  roots.count = ARRAY_LEN(root_array);
+
+  assert(gc_mark(&arena, &roots));
+
+  gc_test_fail_forwarding_after(1);
+  evacuated = gc_evacuate_sparse_pages(&arena, &roots);
+
+  EXPECT_TRUE(!evacuated);
+  EXPECT_TRUE(arena.page_count == page_count);
+  EXPECT_TRUE(arena.nursery_active_page == active_page);
+  EXPECT_TRUE(source_page->state == GC_PAGE_ACTIVE);
+  EXPECT_TRUE(source_page->forwarding_count == 0);
+  EXPECT_TRUE(gc_stats(&arena)->copied_bytes == 0);
+  EXPECT_TRUE(gc_stats(&arena)->promoted_bytes == 0);
+
+  TEST_LOG("relocation_new_page_failure_test evacuated=%d page_count=%zu source_state=%d\n",
+      (int) evacuated,
+      arena.page_count,
+      (int) source_page->state);
+
+  arena_destroy(&arena);
+}
+
 static void test_failed_multi_page_relocation_rolls_back_all_sources(void) {
   Arena arena;
   Pair* first_root;
@@ -1700,6 +1757,8 @@ static void test_load_barrier_failure_keeps_stale_slot_visible(void) {
   GCPtr slot;
   GCPtr loaded;
   Page* source_page;
+  size_t page_count;
+  ArenaGCStats stats;
 
   arena_init(&arena);
 
@@ -1711,6 +1770,9 @@ static void test_load_barrier_failure_keeps_stale_slot_visible(void) {
   source_page = arena_find_page(&arena, original);
   assert(source_page != NULL);
   source_page->state = GC_PAGE_RELOCATING;
+  arena.nursery_active_page = NULL;
+  page_count = arena.page_count;
+  stats = *gc_stats(&arena);
   slot = original;
 
   gc_test_fail_forwarding_after(0);
@@ -1718,13 +1780,18 @@ static void test_load_barrier_failure_keeps_stale_slot_visible(void) {
 
   EXPECT_TRUE(loaded == NULL);
   EXPECT_TRUE(slot == original);
+  EXPECT_TRUE(arena.page_count == page_count);
+  EXPECT_TRUE(arena.nursery_active_page == NULL);
   EXPECT_TRUE(source_page->forwarding_count == 0);
+  EXPECT_TRUE(gc_stats(&arena)->copied_bytes == stats.copied_bytes);
+  EXPECT_TRUE(gc_stats(&arena)->promoted_bytes == stats.promoted_bytes);
 
   source_page->state = GC_PAGE_ACTIVE;
 
-  TEST_LOG("load_barrier_failure_test old=%p loaded=%p forwarding=%zu\n",
+  TEST_LOG("load_barrier_failure_test old=%p loaded=%p page_count=%zu forwarding=%zu\n",
       (void*) original,
       loaded,
+      arena.page_count,
       source_page->forwarding_count);
 
   arena_destroy(&arena);
@@ -1856,6 +1923,9 @@ int main(void) {
   RUN_TEST("oversized allocation preserves arena", test_oversized_allocation_preserves_existing_arena());
   RUN_TEST("invalid trace descriptor rejected", test_invalid_trace_descriptor_is_rejected());
   RUN_TEST("failed relocation preserves destination", test_failed_relocation_preserves_destination_page());
+  RUN_TEST(
+      "failed relocation releases new destination",
+      test_failed_relocation_releases_new_destination_page());
   RUN_TEST(
       "failed multi-page relocation rolls back",
       test_failed_multi_page_relocation_rolls_back_all_sources());

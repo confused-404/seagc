@@ -19,6 +19,9 @@ typedef struct PageSnapshot {
   PageAge age;
   PageSpace space;
   LiveMap livemap;
+  PageForwardingEntry* forwarding;
+  size_t forwarding_count;
+  size_t forwarding_capacity;
 } PageSnapshot;
 
 typedef struct PageSnapshotList {
@@ -35,6 +38,15 @@ typedef struct RelocationPlan {
   PageSpace destination_space;
   u8 object_age;
 } RelocationPlan;
+
+typedef struct RelocationRollback {
+  size_t page_count;
+  Page* nursery_active_page;
+  Page* survivor_active_page;
+  Page* old_active_page;
+  ArenaGCStats stats;
+  PageSnapshotList snapshots;
+} RelocationRollback;
 
 static bool gc_test_forwarding_failure_enabled;
 static size_t gc_test_forwarding_successes_before_failure;
@@ -73,6 +85,41 @@ static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) 
   return NULL;
 }
 
+static bool page_snapshot_init(PageSnapshot* snapshot, Page* page) {
+  snapshot->page = page;
+  snapshot->top = page->top;
+  snapshot->used = page->used;
+  snapshot->state = page->state;
+  snapshot->age = page->age;
+  snapshot->space = page->space;
+  snapshot->livemap = page->livemap;
+  snapshot->forwarding = NULL;
+  snapshot->forwarding_count = page->forwarding_count;
+  snapshot->forwarding_capacity = page->forwarding_capacity;
+
+  if (page->forwarding_capacity == 0) {
+    return true;
+  }
+
+  if (page->forwarding_capacity > SIZE_MAX / sizeof(page->forwarding[0])) {
+    return false;
+  }
+
+  snapshot->forwarding = (PageForwardingEntry*) malloc(
+      page->forwarding_capacity * sizeof(page->forwarding[0]));
+  if (snapshot->forwarding == NULL) {
+    return false;
+  }
+
+  if (page->forwarding_count > 0) {
+    memcpy(
+        snapshot->forwarding,
+        page->forwarding,
+        page->forwarding_count * sizeof(page->forwarding[0]));
+  }
+  return true;
+}
+
 static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
   PageSnapshot* items;
   size_t new_capacity;
@@ -94,18 +141,20 @@ static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
     list->capacity = new_capacity;
   }
 
-  list->items[list->count].page = page;
-  list->items[list->count].top = page->top;
-  list->items[list->count].used = page->used;
-  list->items[list->count].state = page->state;
-  list->items[list->count].age = page->age;
-  list->items[list->count].space = page->space;
-  list->items[list->count].livemap = page->livemap;
+  if (!page_snapshot_init(&list->items[list->count], page)) {
+    return false;
+  }
+
   list->count++;
   return true;
 }
 
 static void page_snapshot_list_reset(PageSnapshotList* list) {
+  for (size_t i = 0; i < list->count; i++) {
+    free(list->items[i].forwarding);
+    list->items[i].forwarding = NULL;
+  }
+
   free(list->items);
   list->items = NULL;
   list->count = 0;
@@ -123,8 +172,55 @@ static void page_snapshot_list_restore(PageSnapshotList* list) {
     page->age = snapshot->age;
     page->space = snapshot->space;
     page->livemap = snapshot->livemap;
-    page_clear_forwarding(page);
+    free(page->forwarding);
+    page->forwarding = snapshot->forwarding;
+    page->forwarding_count = snapshot->forwarding_count;
+    page->forwarding_capacity = snapshot->forwarding_capacity;
+    snapshot->forwarding = NULL;
+    snapshot->forwarding_count = 0;
+    snapshot->forwarding_capacity = 0;
   }
+}
+
+static bool relocation_rollback_begin(RelocationRollback* rollback, Arena* arena) {
+  rollback->page_count = arena->page_count;
+  rollback->nursery_active_page = arena->nursery_active_page;
+  rollback->survivor_active_page = arena->survivor_active_page;
+  rollback->old_active_page = arena->old_active_page;
+  rollback->stats = arena->stats;
+  rollback->snapshots.items = NULL;
+  rollback->snapshots.count = 0;
+  rollback->snapshots.capacity = 0;
+
+  for (size_t i = 0; i < rollback->page_count; i++) {
+    if (!page_snapshot_list_push(&rollback->snapshots, &arena->pages[i])) {
+      page_snapshot_list_reset(&rollback->snapshots);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static void relocation_release_appended_pages(Arena* arena, size_t page_count) {
+  for (size_t i = page_count; i < arena->page_count; i++) {
+    page_release(&arena->pages[i]);
+  }
+
+  arena->page_count = page_count;
+}
+
+static void relocation_rollback_restore(RelocationRollback* rollback, Arena* arena) {
+  page_snapshot_list_restore(&rollback->snapshots);
+  relocation_release_appended_pages(arena, rollback->page_count);
+  arena->nursery_active_page = rollback->nursery_active_page;
+  arena->survivor_active_page = rollback->survivor_active_page;
+  arena->old_active_page = rollback->old_active_page;
+  arena->stats = rollback->stats;
+}
+
+static void relocation_rollback_reset(RelocationRollback* rollback) {
+  page_snapshot_list_reset(&rollback->snapshots);
 }
 
 static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) {
@@ -291,6 +387,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
   const ObjectHeader* hp;
   size_t old_offset;
   PageForwardingEntry* entry;
+  RelocationRollback rollback;
   void* new_payload;
 
   if (object == NULL) {
@@ -313,10 +410,24 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
     return object;
   }
 
-  if (!gc_forward_live_object(arena, source_page, old_offset, false, NULL, &new_payload, NULL)) {
+  if (!relocation_rollback_begin(&rollback, arena)) {
     return NULL;
   }
 
+  if (!gc_forward_live_object(
+      arena,
+      source_page,
+      old_offset,
+      false,
+      &rollback.snapshots,
+      &new_payload,
+      NULL)) {
+    relocation_rollback_restore(&rollback, arena);
+    relocation_rollback_reset(&rollback);
+    return NULL;
+  }
+
+  relocation_rollback_reset(&rollback);
   return new_payload;
 }
 
@@ -449,61 +560,47 @@ void gc_finish_relocation(Arena* arena) {
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   (void) roots;
 
-  const size_t initial_page_count = arena->page_count;
-  PageSnapshotList snapshots = {
-    .items = NULL,
-    .count = 0,
-    .capacity = 0,
-  };
-  Page* nursery_active_page = arena->nursery_active_page;
-  Page* survivor_active_page = arena->survivor_active_page;
-  Page* old_active_page = arena->old_active_page;
-  ArenaGCStats stats = arena->stats;
+  RelocationRollback rollback;
+
+  if (!relocation_rollback_begin(&rollback, arena)) {
+    return false;
+  }
 
   arena->nursery_active_page = NULL;
   arena->survivor_active_page = NULL;
   arena->old_active_page = NULL;
 
-  for (size_t i = 0; i < initial_page_count; i++) {
+  for (size_t i = 0; i < rollback.page_count; i++) {
     Page* source_page = &arena->pages[i];
 
     if (!gc_page_is_relocation_candidate(source_page)) {
       continue;
     }
 
-    if (!gc_evacuate_page(arena, source_page, false, &snapshots)) {
-      page_snapshot_list_restore(&snapshots);
-      page_snapshot_list_reset(&snapshots);
-      arena->nursery_active_page = nursery_active_page;
-      arena->survivor_active_page = survivor_active_page;
-      arena->old_active_page = old_active_page;
-      arena->stats = stats;
+    if (!gc_evacuate_page(arena, source_page, false, &rollback.snapshots)) {
+      relocation_rollback_restore(&rollback, arena);
+      relocation_rollback_reset(&rollback);
       return false;
     }
   }
 
-  page_snapshot_list_reset(&snapshots);
+  relocation_rollback_reset(&rollback);
   return true;
 }
 
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
-  const size_t initial_page_count = arena->page_count;
-  PageSnapshotList snapshots = {
-    .items = NULL,
-    .count = 0,
-    .capacity = 0,
-  };
-  Page* nursery_active_page = arena->nursery_active_page;
-  Page* survivor_active_page = arena->survivor_active_page;
-  Page* old_active_page = arena->old_active_page;
-  ArenaGCStats stats = arena->stats;
+  RelocationRollback rollback;
 
   (void) roots;
+
+  if (!relocation_rollback_begin(&rollback, arena)) {
+    return false;
+  }
 
   arena->nursery_active_page = NULL;
   arena->survivor_active_page = NULL;
 
-  for (size_t i = 0; i < initial_page_count; i++) {
+  for (size_t i = 0; i < rollback.page_count; i++) {
     Page* source_page = &arena->pages[i];
 
     if (source_page->age != GC_PAGE_AGE_YOUNG) {
@@ -515,16 +612,6 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
     }
 
     if (source_page->state == GC_PAGE_LARGE) {
-      if (!page_snapshot_list_push(&snapshots, source_page)) {
-        page_snapshot_list_restore(&snapshots);
-        page_snapshot_list_reset(&snapshots);
-        arena->nursery_active_page = nursery_active_page;
-        arena->survivor_active_page = survivor_active_page;
-        arena->old_active_page = old_active_page;
-        arena->stats = stats;
-        return false;
-      }
-
       page_promote(source_page);
       source_page->space = GC_SPACE_LARGE;
       continue;
@@ -540,17 +627,13 @@ bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
       arena->old_active_page = NULL;
     }
 
-    if (!gc_evacuate_page(arena, source_page, true, &snapshots)) {
-      page_snapshot_list_restore(&snapshots);
-      page_snapshot_list_reset(&snapshots);
-      arena->nursery_active_page = nursery_active_page;
-      arena->survivor_active_page = survivor_active_page;
-      arena->old_active_page = old_active_page;
-      arena->stats = stats;
+    if (!gc_evacuate_page(arena, source_page, true, &rollback.snapshots)) {
+      relocation_rollback_restore(&rollback, arena);
+      relocation_rollback_reset(&rollback);
       return false;
     }
   }
 
-  page_snapshot_list_reset(&snapshots);
+  relocation_rollback_reset(&rollback);
   return true;
 }
