@@ -2,10 +2,12 @@
 
 #include "livemap.h"
 
+/* Initialize an empty page-local liveness map. */
 void livemap_init(LiveMap* livemap) {
   livemap_reset(livemap); 
 }
 
+/* Clear all liveness bits and aggregate counters. */
 void livemap_reset(LiveMap *livemap) {
   livemap->live_bytes = 0;
   livemap->live_objects = 0;
@@ -20,6 +22,7 @@ typedef struct LiveMapLocation {
   u64 bit_mask;
 } LiveMapLocation;
 
+/* Map an aligned page offset to its liveness word and bit. */
 static LiveMapLocation calculate_livemap_location(size_t page_offset) {
   assert(page_offset < GC_PAGE_SIZE);
   assert(page_offset == ALIGN_UP(page_offset, GC_LIVEMAP_SLOT_SIZE));
@@ -34,12 +37,14 @@ static LiveMapLocation calculate_livemap_location(size_t page_offset) {
   return lml; 
 }
 
+/* Test whether the object starting at an offset is marked live. */
 bool livemap_is_live(const LiveMap *livemap, size_t page_offset) {
   LiveMapLocation lml = calculate_livemap_location(page_offset);
 
   return (livemap->bits[lml.word_index] & lml.bit_mask) != 0;
 }
 
+/* Mark an object once and update aggregate liveness counters. */
 bool livemap_mark(LiveMap *livemap, size_t page_offset, size_t object_size) {
   LiveMapLocation lml = calculate_livemap_location(page_offset);
 

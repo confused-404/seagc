@@ -73,18 +73,26 @@ typedef bool (*ArenaObjectFieldVisitor)(
     void** field_slot,
     void* user_data);
 
+/* Compute the aligned header and total allocation sizes for a payload. */
 AllocLayout arena_make_layout(size_t payload_size);
+/* Initialize an empty arena with the default collection policy. */
 void arena_init(Arena* arena);
+/* Release every resource owned by an arena. */
 void arena_destroy(Arena* arena);
+/* Append a page with newly allocated backing memory. */
 Page* arena_add_page(
     Arena* arena,
     size_t capacity,
     PageState state,
     PageAge age,
     PageSpace space);
+/* Find or create the normal allocation page implied by an age. */
 Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age);
+/* Find or create an active normal page in a specific space. */
 Page* arena_get_active_page_for_space(Arena* arena, size_t size, PageSpace space);
+/* Allocate a pointer-free object directly in nursery space. */
 void* arena_alloc(Arena* arena, size_t payload_size);
+/* Allocate an exactly traced object directly in nursery space. */
 void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace);
 /* Low-level allocator for GC internals/tests that must choose a generation space. */
 void* arena_alloc_traced_in_space(
@@ -92,21 +100,32 @@ void* arena_alloc_traced_in_space(
     size_t payload_size,
     const TraceDescriptor* trace,
     PageSpace space);
+/* Choose the collection requested by current allocation pressure. */
 ArenaCollectionTrigger arena_collection_trigger(const Arena* arena);
+/* Report whether current pressure requests any collection. */
 bool arena_should_collect(const Arena* arena);
+/* Return the arena's current collection policy. */
 const ArenaGCPolicy* gc_policy(const Arena* arena);
+/* Return the arena's current collection statistics. */
 const ArenaGCStats* gc_stats(const Arena* arena);
+/* Recompute live-byte statistics from non-source pages. */
 void arena_stats_recompute_live(Arena* arena);
+/* Find the non-free page containing an object's header. */
 Page* arena_find_page(Arena* arena, const void* payload_pointer);
+/* Mark an object and report whether this is its first mark. */
 bool arena_mark_object(Arena* arena, const void* payload_pointer);
+/* Mark every object directly referenced by a traced payload. */
 void arena_mark_object_fields(Arena* arena, void* payload_pointer);
+/* Visit each pointer slot described by an object's trace metadata. */
 bool arena_visit_object_fields(
     Arena* arena,
     void* payload_pointer,
     ArenaObjectFieldVisitor visitor,
     void* user_data);
+/* Walk every allocated object in page and allocation order. */
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data);
 
+/* Recover an object's header from its payload pointer. */
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size);
 
 #endif

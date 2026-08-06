@@ -68,6 +68,7 @@ static size_t failed_test_count;
     arena_destroy(&arena); \
   } while (0)
 
+/* Validate and accumulate one object visited by arena iteration. */
 static void count_object(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
   ObjectIterationStats* stats = (ObjectIterationStats*) user_data;
   const size_t header_size = arena_make_layout(0).header_size;

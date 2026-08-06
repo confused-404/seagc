@@ -62,14 +62,17 @@ static bool gc_collect_with_reason(
     const GCRootSet* roots,
     GCCollectionReason reason);
 
+/* Make the next required remembered-set growth fail for testing. */
 void gc_test_fail_next_remembered_grow(void) {
   gc_test_fail_remembered_grow = true;
 }
 
+/* Make the next required root-registry growth fail for testing. */
 void gc_test_fail_next_root_grow(void) {
   gc_test_fail_root_grow = true;
 }
 
+/* Report whether a payload belongs to a live young page. */
 static bool gc_object_is_young(Arena* arena, const void* object) {
   Page* page;
 
@@ -81,6 +84,7 @@ static bool gc_object_is_young(Arena* arena, const void* object) {
   return page != NULL && page->age == GC_PAGE_AGE_YOUNG;
 }
 
+/* Report whether a payload belongs to a live old page. */
 static bool gc_object_is_old(Arena* arena, const void* object) {
   Page* page;
 
@@ -92,6 +96,7 @@ static bool gc_object_is_old(Arena* arena, const void* object) {
   return page != NULL && page->age == GC_PAGE_AGE_OLD;
 }
 
+/* Check whether a page may legally contain remembered pointer slots. */
 static bool gc_page_can_own_remembered_slots(const Page* page) {
   return page != NULL &&
       page->age == GC_PAGE_AGE_OLD &&
@@ -100,6 +105,7 @@ static bool gc_page_can_own_remembered_slots(const Page* page) {
           page->state == GC_PAGE_LARGE);
 }
 
+/* Check whether a slot address lies in a page's allocated range. */
 static bool gc_slot_belongs_to_page(const Page* page, const GCPtr* slot) {
   const u8* address = (const u8*) slot;
 
@@ -110,12 +116,14 @@ static bool gc_slot_belongs_to_page(const Page* page, const GCPtr* slot) {
       address < page->top;
 }
 
+/* Empty every page-local remembered set without freeing capacity. */
 static void gc_remembered_set_clear(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     arena->pages[i].remembered_set.count = 0;
   }
 }
 
+/* Sum committed bytes on non-free pages in one allocation space. */
 static size_t gc_space_used_bytes(const Arena* arena, PageSpace space) {
   size_t bytes = 0;
 
@@ -130,6 +138,7 @@ static size_t gc_space_used_bytes(const Arena* arena, PageSpace space) {
   return bytes;
 }
 
+/* Sum committed bytes on all non-free young pages. */
 static size_t gc_young_used_bytes(const Arena* arena) {
   size_t bytes = 0;
 
@@ -144,6 +153,7 @@ static size_t gc_young_used_bytes(const Arena* arena) {
   return bytes;
 }
 
+/* Sum committed bytes across the entire non-free heap. */
 static size_t gc_total_used_bytes(const Arena* arena) {
   size_t bytes = 0;
 
@@ -158,6 +168,7 @@ static size_t gc_total_used_bytes(const Arena* arena) {
   return bytes;
 }
 
+/* Add the collection's net byte reduction to reclaimed statistics. */
 static void gc_record_reclaimed(Arena* arena, size_t before_bytes) {
   const size_t after_bytes = gc_total_used_bytes(arena);
 
@@ -166,6 +177,7 @@ static void gc_record_reclaimed(Arena* arena, size_t before_bytes) {
   }
 }
 
+/* Adapt nursery size and promotion age from young-collection outcomes. */
 static void gc_policy_after_young(Arena* arena, size_t young_before, size_t promoted_before) {
   const size_t young_after = gc_young_used_bytes(arena);
   const size_t survivor_after = gc_space_used_bytes(arena, GC_SPACE_SURVIVOR);
@@ -187,6 +199,7 @@ static void gc_policy_after_young(Arena* arena, size_t young_before, size_t prom
   }
 }
 
+/* Check whether a slot appears in its owning page's remembered set. */
 static bool gc_remembered_set_contains(const Arena* arena, GCPtr* slot) {
   const Page* owner_page;
   const RememberedSet* remembered_set;
@@ -215,6 +228,7 @@ static bool gc_remembered_set_contains(const Arena* arena, GCPtr* slot) {
   return false;
 }
 
+/* Add a valid slot to an old page's remembered set exactly once. */
 static bool gc_remember_slot_on_page(Page* owner_page, GCPtr* slot) {
   RememberedSet* remembered_set;
   void*** slots;
@@ -266,6 +280,7 @@ static bool gc_remember_slot_on_page(Page* owner_page, GCPtr* slot) {
   return true;
 }
 
+/* Count remembered slots across all pages. */
 size_t gc_remembered_set_count(const Arena* arena) {
   size_t count = 0;
 
@@ -276,6 +291,7 @@ size_t gc_remembered_set_count(const Arena* arena) {
   return count;
 }
 
+/* Check whether a root slot address is already registered. */
 static bool gc_root_registry_contains(const Arena* arena, GCPtr* slot) {
   const RootRegistry* roots = &arena->roots;
 
@@ -288,6 +304,7 @@ static bool gc_root_registry_contains(const Arena* arena, GCPtr* slot) {
   return false;
 }
 
+/* Register a persistent writable root slot, deduplicating its address. */
 bool gc_root_register(Arena* arena, GCPtr* slot) {
   RootRegistry* roots = &arena->roots;
   void*** slots;
@@ -329,6 +346,7 @@ bool gc_root_register(Arena* arena, GCPtr* slot) {
   return true;
 }
 
+/* Remove a persistent root slot by address. */
 bool gc_root_unregister(Arena* arena, GCPtr* slot) {
   RootRegistry* roots = &arena->roots;
 
@@ -346,6 +364,7 @@ bool gc_root_unregister(Arena* arena, GCPtr* slot) {
   return false;
 }
 
+/* Initialize a handle and register its internal slot as a root. */
 bool gc_handle_init(Arena* arena, GCHandle* handle, GCPtr value) {
   if (handle == NULL) {
     return false;
@@ -369,6 +388,7 @@ bool gc_handle_init(Arena* arena, GCHandle* handle, GCPtr value) {
   return true;
 }
 
+/* Unregister and invalidate an active handle. */
 bool gc_handle_destroy(GCHandle* handle) {
   bool removed;
 
@@ -383,6 +403,7 @@ bool gc_handle_destroy(GCHandle* handle) {
   return removed;
 }
 
+/* Return an active handle's current payload pointer. */
 GCPtr gc_handle_get(const GCHandle* handle) {
   if (handle == NULL || !handle->active) {
     return NULL;
@@ -391,6 +412,7 @@ GCPtr gc_handle_get(const GCHandle* handle) {
   return handle->slot;
 }
 
+/* Replace the rooted value held by an active handle. */
 bool gc_handle_set(GCHandle* handle, GCPtr value) {
   if (handle == NULL || !handle->active) {
     return false;
@@ -400,6 +422,7 @@ bool gc_handle_set(GCHandle* handle, GCPtr value) {
   return true;
 }
 
+/* Remove stale, invalid, and no-longer-young remembered entries. */
 static void gc_prune_remembered_set(Arena* arena) {
   for (size_t page_index = 0; page_index < arena->page_count; page_index++) {
     Page* page = &arena->pages[page_index];
@@ -426,6 +449,7 @@ static void gc_prune_remembered_set(Arena* arena) {
   }
 }
 
+/* Require each old-to-young field to have a remembered entry. */
 static bool gc_verify_remembered_field_visitor(
     const ObjectHeader* header,
     void* payload,
@@ -443,6 +467,7 @@ static bool gc_verify_remembered_field_visitor(
   return gc_remembered_set_contains(state->arena, (GCPtr*) field_slot);
 }
 
+/* Verify remembered-set coverage for one old object's fields. */
 static void gc_verify_remembered_object_visit(
     Page* page,
     const ObjectHeader* header,
@@ -467,6 +492,7 @@ static void gc_verify_remembered_object_visit(
       state);
 }
 
+/* Verify that every old-to-young field has a remembered entry. */
 bool gc_verify_remembered_set(Arena* arena) {
   RememberedSetVerifyState state = {
     .arena = arena,
@@ -477,6 +503,7 @@ bool gc_verify_remembered_set(Arena* arena) {
   return state.ok;
 }
 
+/* Record one old-object field when it points to a young object. */
 static bool gc_rebuild_remembered_field_visitor(
     const ObjectHeader* header,
     void* payload,
@@ -495,6 +522,7 @@ static bool gc_rebuild_remembered_field_visitor(
   return gc_remember_slot_on_page(owner_page, (GCPtr*) field_slot);
 }
 
+/* Rebuild remembered entries for one eligible old object. */
 static void gc_rebuild_remembered_object_visit(
     Page* page,
     const ObjectHeader* header,
@@ -518,6 +546,7 @@ static void gc_rebuild_remembered_object_visit(
       state);
 }
 
+/* Recreate all remembered sets by scanning old traced objects. */
 static bool gc_rebuild_remembered_sets(Arena* arena) {
   RememberedSetRebuildState state = {
     .arena = arena,
@@ -529,6 +558,7 @@ static bool gc_rebuild_remembered_sets(Arena* arena) {
   return state.ok;
 }
 
+/* Check that a page state is recognized by collection phase assertions. */
 static bool gc_page_state_allows_relocation(const Page* page) {
   return page->state == GC_PAGE_ACTIVE ||
       page->state == GC_PAGE_FULL ||
@@ -537,6 +567,7 @@ static bool gc_page_state_allows_relocation(const Page* page) {
       page->state == GC_PAGE_LARGE;
 }
 
+/* Assert page-state invariants expected at a full-collection phase boundary. */
 static void gc_assert_phase_invariants(const Arena* arena, GCCollectPhase phase) {
   for (size_t i = 0; i < arena->page_count; i++) {
     const Page* page = &arena->pages[i];
@@ -571,10 +602,12 @@ static void gc_assert_phase_invariants(const Arena* arena, GCCollectPhase phase)
   }
 }
 
+/* Allocate a pointer-free nursery object with GC pressure handling. */
 void* gc_alloc(Arena* arena, size_t payload_size, const GCRootSet* roots) {
   return gc_alloc_traced(arena, payload_size, NULL, roots);
 }
 
+/* Allocate a traced nursery object, collecting and retrying as needed. */
 void* gc_alloc_traced(
     Arena* arena,
     size_t payload_size,
@@ -616,10 +649,12 @@ void* gc_alloc_traced(
   return arena_alloc_traced(arena, payload_size, trace);
 }
 
+/* Allocate a pointer-free old object with full-collection retry. */
 void* gc_alloc_old(Arena* arena, size_t payload_size, const GCRootSet* roots) {
   return gc_alloc_old_traced(arena, payload_size, NULL, roots);
 }
 
+/* Allocate a traced old object with full-collection retry. */
 void* gc_alloc_old_traced(
     Arena* arena,
     size_t payload_size,
@@ -645,6 +680,7 @@ void* gc_alloc_old_traced(
   return arena_alloc_traced_in_space(arena, payload_size, trace, GC_SPACE_OLD);
 }
 
+/* Apply the old-to-young write barrier before publishing a slot value. */
 bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
   Page* owner_page;
 
@@ -661,6 +697,7 @@ bool gc_store_pointer(Arena* arena, void* owner, GCPtr* slot, GCPtr value) {
   return true;
 }
 
+/* Remap a relocating slot in place, forwarding on demand if necessary. */
 GCPtr gc_load_pointer(Arena* arena, GCPtr* slot) {
   Page* value_page;
   GCPtr value;
@@ -685,6 +722,7 @@ GCPtr gc_load_pointer(Arena* arena, GCPtr* slot) {
   return value;
 }
 
+/* Release a mark worklist and return it to an empty state. */
 static void mark_worklist_destroy(MarkWorklist* worklist) {
   free(worklist->items);
   worklist->items = NULL;
@@ -692,6 +730,7 @@ static void mark_worklist_destroy(MarkWorklist* worklist) {
   worklist->capacity = 0;
 }
 
+/* Append a payload pointer, growing the mark worklist safely. */
 static bool mark_worklist_push(MarkWorklist* worklist, GCPtr item) {
   if (worklist->count == worklist->capacity) {
     size_t new_capacity;
@@ -720,11 +759,13 @@ static bool mark_worklist_push(MarkWorklist* worklist, GCPtr item) {
   return true;
 }
 
+/* Pop the most recently queued payload from the mark worklist. */
 static GCPtr mark_worklist_pop(MarkWorklist* worklist) {
   assert(worklist->count > 0);
   return worklist->items[--worklist->count];
 }
 
+/* Replace a source pointer with its existing forwarded destination. */
 static bool gc_repair_pointer(Arena* arena, GCPtr* slot) {
   if (slot == NULL || *slot == NULL) {
     return true;
@@ -734,6 +775,7 @@ static bool gc_repair_pointer(Arena* arena, GCPtr* slot) {
   return *slot != NULL;
 }
 
+/* Repair one traced field and remember any resulting old-to-young edge. */
 static bool gc_repair_field_visitor(
     const ObjectHeader* header,
     void* payload,
@@ -756,6 +798,7 @@ static bool gc_repair_field_visitor(
   return true;
 }
 
+/* Mark an eligible child and enqueue it for transitive tracing. */
 static bool gc_mark_field_visitor(
     const ObjectHeader* header,
     void* payload,
@@ -778,6 +821,7 @@ static bool gc_mark_field_visitor(
   return true;
 }
 
+/* Repair all traced fields in one non-source object. */
 static void gc_repair_visit(Page* page, const ObjectHeader* header, void* payload, void* user_data) {
   RepairVisitState* state = (RepairVisitState*) user_data;
   (void) page;
@@ -798,6 +842,7 @@ static void gc_repair_visit(Page* page, const ObjectHeader* header, void* payloa
       state);
 }
 
+/* Repair transient and registered root slots after relocation. */
 bool gc_repair_roots(Arena* arena, const GCRootSet* roots) {
   if (roots != NULL) {
     for (size_t i = 0; i < roots->count; i++) {
@@ -817,6 +862,7 @@ bool gc_repair_roots(Arena* arena, const GCRootSet* roots) {
   return true;
 }
 
+/* Repair traced fields in every non-free, non-source object. */
 bool gc_repair_all_objects(Arena* arena) {
   RepairVisitState state = {
     .arena = arena,
@@ -827,6 +873,7 @@ bool gc_repair_all_objects(Arena* arena) {
   return state.ok;
 }
 
+/* Repair fields inside destination copies produced by young evacuation. */
 static bool gc_repair_relocated_young_objects(Arena* arena) {
   RepairVisitState state = {
     .arena = arena,
@@ -855,6 +902,7 @@ static bool gc_repair_relocated_young_objects(Arena* arena) {
   return state.ok;
 }
 
+/* Repair all still-valid slots recorded on old pages. */
 static bool gc_repair_remembered_slots(Arena* arena) {
   for (size_t page_index = 0; page_index < arena->page_count; page_index++) {
     Page* page = &arena->pages[page_index];
@@ -880,6 +928,7 @@ static bool gc_repair_remembered_slots(Arena* arena) {
   return true;
 }
 
+/* Trace all child fields of one marked object into the full mark worklist. */
 static bool mark_object_fields_into_worklist(
     Arena* arena,
     void* payload_pointer,
@@ -897,6 +946,7 @@ static bool mark_object_fields_into_worklist(
       &state);
 }
 
+/* Mark and enqueue the object currently held by one root slot. */
 static bool gc_mark_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* worklist) {
   if (slot == NULL || *slot == NULL) {
     return true;
@@ -909,6 +959,7 @@ static bool gc_mark_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* worklist)
   return true;
 }
 
+/* Mark the full transitive closure of transient and registered roots. */
 bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
   MarkWorklist worklist = {
     .items = NULL,
@@ -941,6 +992,7 @@ bool gc_mark_roots(Arena* arena, const GCRootSet* roots) {
   return ok;
 }
 
+/* Trace only young children of one marked young object. */
 static bool mark_young_object_fields_into_worklist(
     Arena* arena,
     void* payload_pointer,
@@ -958,6 +1010,7 @@ static bool mark_young_object_fields_into_worklist(
       &state);
 }
 
+/* Mark and enqueue a root value only when it is young. */
 static bool gc_mark_young_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* worklist) {
   if (slot == NULL || *slot == NULL || !gc_object_is_young(arena, *slot)) {
     return true;
@@ -970,6 +1023,7 @@ static bool gc_mark_young_root_slot(Arena* arena, GCPtr* slot, MarkWorklist* wor
   return true;
 }
 
+/* Clear liveness information only on young pages. */
 static void gc_clear_young_marks(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     if (arena->pages[i].age == GC_PAGE_AGE_YOUNG) {
@@ -978,6 +1032,7 @@ static void gc_clear_young_marks(Arena* arena) {
   }
 }
 
+/* Mark young reachability from roots and remembered old slots. */
 static bool gc_mark_young_roots(Arena* arena, const GCRootSet* roots) {
   MarkWorklist worklist = {
     .items = NULL,
@@ -1026,17 +1081,20 @@ static bool gc_mark_young_roots(Arena* arena, const GCRootSet* roots) {
   return ok;
 }
 
+/* Clear liveness information on every page. */
 void gc_clear_marks(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     livemap_reset(&arena->pages[i].livemap);
   }
 }
 
+/* Reset marks and compute full-heap reachability from all roots. */
 bool gc_mark(Arena* arena, const GCRootSet* roots) {
   gc_clear_marks(arena);
   return gc_mark_roots(arena, roots);
 }
 
+/* Remove a page from any active allocation cursor that references it. */
 static void gc_clear_active_page_reference(Arena* arena, Page* page) {
   if (arena->nursery_active_page == page) {
     arena->nursery_active_page = NULL;
@@ -1049,6 +1107,7 @@ static void gc_clear_active_page_reference(Arena* arena, Page* page) {
   }
 }
 
+/* Promote every marked surviving page after a full collection. */
 static void gc_promote_surviving_pages(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -1078,6 +1137,7 @@ static void gc_promote_surviving_pages(Arena* arena) {
   }
 }
 
+/* Reset pages with no marked objects to reusable free pages. */
 void gc_sweep(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -1104,6 +1164,7 @@ void gc_sweep(Arena* arena) {
   }
 }
 
+/* Reset only unmarked young pages before young evacuation. */
 static void gc_sweep_dead_young(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -1131,6 +1192,7 @@ static void gc_sweep_dead_young(Arena* arena) {
   }
 }
 
+/* Run a complete minor collection and record its trigger reason. */
 static bool gc_collect_young_with_reason(
     Arena* arena,
     const GCRootSet* roots,
@@ -1185,10 +1247,12 @@ static bool gc_collect_young_with_reason(
   return true;
 }
 
+/* Run an explicitly requested young-generation collection. */
 bool gc_collect_young(Arena* arena, const GCRootSet* roots) {
   return gc_collect_young_with_reason(arena, roots, GC_REASON_EXPLICIT_YOUNG);
 }
 
+/* Run every full-collection phase and record its trigger reason. */
 static bool gc_collect_with_reason(
     Arena* arena,
     const GCRootSet* roots,
@@ -1243,6 +1307,7 @@ static bool gc_collect_with_reason(
   return true;
 }
 
+/* Run an explicitly requested full-heap collection. */
 bool gc_collect(Arena* arena, const GCRootSet* roots) {
   return gc_collect_with_reason(arena, roots, GC_REASON_EXPLICIT_FULL);
 }

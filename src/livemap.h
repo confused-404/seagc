@@ -19,9 +19,13 @@ typedef struct LiveMap {
   u64 bits[GC_LIVEMAP_WORD_COUNT];
 } LiveMap;
 
+/* Initialize an empty page-local liveness map. */
 void livemap_init(LiveMap* livemap);
+/* Clear all liveness bits and aggregate counters. */
 void livemap_reset(LiveMap* livemap);
+/* Mark an object once and update aggregate counters. */
 bool livemap_mark(LiveMap* livemap, size_t page_offset, size_t object_size);
+/* Test whether the object at an offset is marked live. */
 bool livemap_is_live(const LiveMap* livemap, size_t page_offset);
 
 #endif

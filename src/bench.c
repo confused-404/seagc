@@ -147,6 +147,7 @@ static const BenchWorkload workloads[] = {
   },
 };
 
+/* Read a monotonic timestamp, falling back to process CPU time. */
 static double bench_now_seconds(void) {
   struct timespec ts;
 
@@ -157,6 +158,7 @@ static double bench_now_seconds(void) {
   return (double) clock() / (double) CLOCKS_PER_SEC;
 }
 
+/* Multiply sizes, saturating at SIZE_MAX on overflow. */
 static size_t checked_mul_or_max(size_t left, size_t right) {
   if (right != 0u && left > SIZE_MAX / right) {
     return SIZE_MAX;
@@ -165,23 +167,28 @@ static size_t checked_mul_or_max(size_t left, size_t right) {
   return left * right;
 }
 
+/* Apply the global scale factor to the requested iteration count. */
 static size_t effective_iterations(const BenchOptions* options) {
   return checked_mul_or_max(options->iterations, options->scale);
 }
 
+/* Apply the global scale factor to a workload-specific count. */
 static size_t scaled_count(size_t base, const BenchOptions* options) {
   return checked_mul_or_max(base, options->scale);
 }
 
+/* Return the larger of two size values. */
 static size_t max_size(size_t left, size_t right) {
   return left > right ? left : right;
 }
 
+/* Add one allocation and its aligned footprint to a report. */
 static void bench_record_alloc(BenchReport* report, size_t payload_size) {
   report->alloc_count++;
   report->approx_bytes += arena_make_layout(payload_size).total_size;
 }
 
+/* Initialize an array of empty roots, rolling back partial failure. */
 static bool bench_handle_array_init(Arena* arena, GCHandle* handles, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (!gc_handle_init(arena, &handles[i], NULL)) {
@@ -195,6 +202,7 @@ static bool bench_handle_array_init(Arena* arena, GCHandle* handles, size_t coun
   return true;
 }
 
+/* Destroy every active handle in an array. */
 static void bench_handle_array_destroy(GCHandle* handles, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (handles[i].active) {
@@ -203,6 +211,7 @@ static void bench_handle_array_destroy(GCHandle* handles, size_t count) {
   }
 }
 
+/* Classify current page counts by state and allocation space. */
 static void bench_count_pages(const Arena* arena, PageCounts* counts) {
   memset(counts, 0, sizeof(*counts));
 
@@ -233,6 +242,7 @@ static void bench_count_pages(const Arena* arena, PageCounts* counts) {
   }
 }
 
+/* Sum the arena's per-space live-byte statistics. */
 static size_t bench_live_bytes(const Arena* arena) {
   size_t bytes = 0;
   const ArenaGCStats* stats = gc_stats(arena);
@@ -244,6 +254,7 @@ static size_t bench_live_bytes(const Arena* arena) {
   return bytes;
 }
 
+/* Capture elapsed time and final collector metrics for one run. */
 static void bench_finish_report(
     Arena* arena,
     BenchReport* report,
@@ -263,6 +274,7 @@ static void bench_finish_report(
   bench_count_pages(arena, &report->pages);
 }
 
+/* Allocate and initialize one exactly traced benchmark node. */
 static bool bench_alloc_node(Arena* arena, BenchReport* report, BenchNode** node) {
   BenchNode* allocated = (BenchNode*) gc_alloc_traced(arena, sizeof(*allocated), &bench_node_trace, NULL);
 
@@ -283,11 +295,13 @@ static bool bench_alloc_node(Arena* arena, BenchReport* report, BenchNode** node
   return true;
 }
 
+/* Advance the deterministic mixed-workload pseudo-random sequence. */
 static unsigned int bench_lcg_next(unsigned int* state) {
   *state = (*state * 1664525u) + 1013904223u;
   return *state;
 }
 
+/* Measure short-lived pointer-free nursery allocation. */
 static bool run_nursery(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -328,6 +342,7 @@ static bool run_nursery(const BenchOptions* options, size_t repeat_index, BenchR
   return true;
 }
 
+/* Measure traced graph allocation, barriers, collection, and traversal. */
 static bool run_graph(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -419,6 +434,7 @@ static bool run_graph(const BenchOptions* options, size_t repeat_index, BenchRep
   return true;
 }
 
+/* Measure old-to-young stores and remembered-set maintenance. */
 static bool run_remembered(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -518,6 +534,7 @@ static bool run_remembered(const BenchOptions* options, size_t repeat_index, Ben
   return true;
 }
 
+/* Measure survivor copying and promotion under repeated minor collections. */
 static bool run_promotion(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -579,6 +596,7 @@ static bool run_promotion(const BenchOptions* options, size_t repeat_index, Benc
   return true;
 }
 
+/* Measure dedicated large-page allocation and full collection. */
 static bool run_large(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -629,6 +647,7 @@ static bool run_large(const BenchOptions* options, size_t repeat_index, BenchRep
   return true;
 }
 
+/* Measure deterministic mixed allocation, mutation, and collection pressure. */
 static bool run_mixed(const BenchOptions* options, size_t repeat_index, BenchReport* report) {
   Arena arena;
   ArenaGCStats before;
@@ -756,6 +775,7 @@ static bool run_mixed(const BenchOptions* options, size_t repeat_index, BenchRep
   return true;
 }
 
+/* Parse a non-negative decimal size with range validation. */
 static bool parse_size_arg(const char* text, size_t* value) {
   unsigned long parsed;
   char* end = NULL;
@@ -774,6 +794,7 @@ static bool parse_size_arg(const char* text, size_t* value) {
   return true;
 }
 
+/* Parse a non-negative decimal unsigned integer with range validation. */
 static bool parse_uint_arg(const char* text, unsigned int* value) {
   unsigned long parsed;
   char* end = NULL;
@@ -792,6 +813,7 @@ static bool parse_uint_arg(const char* text, unsigned int* value) {
   return true;
 }
 
+/* Print benchmark command-line usage to a chosen stream. */
 static void print_usage(FILE* stream, const char* argv0) {
   fprintf(stream, "Usage: %s [options]\n", argv0);
   fprintf(stream, "Options:\n");
@@ -808,12 +830,14 @@ static void print_usage(FILE* stream, const char* argv0) {
   fprintf(stream, "  --help            show this help\n");
 }
 
+/* Print available workload names and descriptions. */
 static void list_workloads(void) {
   for (size_t i = 0; i < ARRAY_LEN(workloads); i++) {
     printf("%s\t%s\n", workloads[i].name, workloads[i].description);
   }
 }
 
+/* Apply defaults and parse all benchmark command-line options. */
 static bool parse_options(int argc, char** argv, BenchOptions* options) {
   options->iterations = 20000;
   options->repeat = 1;
@@ -884,14 +908,17 @@ static bool parse_options(int argc, char** argv, BenchOptions* options) {
   return true;
 }
 
+/* Report whether a named workload is selected by the current filter. */
 static bool workload_selected(const BenchOptions* options, const char* name) {
   return strcmp(options->workload, "all") == 0 || strcmp(options->workload, name) == 0;
 }
 
+/* Print the machine-readable report column names. */
 static void print_csv_header(void) {
   printf("workload,repeat,units,elapsed_seconds,alloc_count,approx_bytes,allocs_per_sec,mb_per_sec,minor_collections,full_collections,page_count,free_pages,nursery_pages,survivor_pages,old_pages,large_pages,remembered_slots,live_bytes,checksum\n");
 }
 
+/* Print the aligned human-readable report headings. */
 static void print_human_header(void) {
   printf("%-11s %6s %10s %10s %12s %12s %8s %6s %6s %6s %6s %6s %6s %6s %6s %9s %11s\n",
       "workload",
@@ -913,6 +940,7 @@ static void print_human_header(void) {
       "live_bytes");
 }
 
+/* Print one benchmark report in the requested output format. */
 static void print_report(const BenchOptions* options, const BenchReport* report) {
   const double elapsed = report->elapsed_seconds > 0.0 ? report->elapsed_seconds : 0.000000001;
   const double allocs_per_sec = (double) report->alloc_count / elapsed;

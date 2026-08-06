@@ -52,20 +52,24 @@ static bool gc_test_forwarding_failure_enabled;
 static size_t gc_test_forwarding_successes_before_failure;
 static size_t gc_test_forwarding_successes;
 
+/* Fail forwarding after a chosen number of successful entries for testing. */
 void gc_test_fail_forwarding_after(size_t successful_forwarding_entries) {
   gc_test_forwarding_failure_enabled = true;
   gc_test_forwarding_successes_before_failure = successful_forwarding_entries;
   gc_test_forwarding_successes = 0;
 }
 
+/* Assert that a page is currently a relocation source. */
 static void gc_assert_relocation_page(const Page* page) {
   assert(page->state == GC_PAGE_RELOCATING);
 }
 
+/* Assert that a page is safe to use outside source-page logic. */
 static void gc_assert_nonrelocating_page(const Page* page) {
   assert(page->state != GC_PAGE_RELOCATING);
 }
 
+/* Assert that a page is a valid active relocation destination. */
 static void gc_assert_relocation_destination_page(const Page* page, size_t min_capacity) {
   assert(page != NULL);
   assert(page->state == GC_PAGE_ACTIVE);
@@ -75,6 +79,7 @@ static void gc_assert_relocation_destination_page(const Page* page, size_t min_c
   assert(page->forwarding_count == 0);
 }
 
+/* Find the destination recorded for one source header offset. */
 static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) {
   for (size_t i = 0; i < page->forwarding_count; i++) {
     if (page->forwarding[i].old_offset == old_offset) {
@@ -85,6 +90,7 @@ static PageForwardingEntry* page_find_forwarding(Page* page, size_t old_offset) 
   return NULL;
 }
 
+/* Capture mutable page metadata for transactional relocation rollback. */
 static bool page_snapshot_init(PageSnapshot* snapshot, Page* page) {
   snapshot->page = page;
   snapshot->top = page->top;
@@ -120,6 +126,7 @@ static bool page_snapshot_init(PageSnapshot* snapshot, Page* page) {
   return true;
 }
 
+/* Snapshot a page once and append it to a rollback list. */
 static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
   PageSnapshot* items;
   size_t new_capacity;
@@ -149,6 +156,7 @@ static bool page_snapshot_list_push(PageSnapshotList* list, Page* page) {
   return true;
 }
 
+/* Release a snapshot list without restoring its pages. */
 static void page_snapshot_list_reset(PageSnapshotList* list) {
   for (size_t i = 0; i < list->count; i++) {
     free(list->items[i].forwarding);
@@ -161,6 +169,7 @@ static void page_snapshot_list_reset(PageSnapshotList* list) {
   list->capacity = 0;
 }
 
+/* Restore every snapshotted page and transfer saved forwarding storage back. */
 static void page_snapshot_list_restore(PageSnapshotList* list) {
   for (size_t i = 0; i < list->count; i++) {
     PageSnapshot* snapshot = &list->items[i];
@@ -182,6 +191,7 @@ static void page_snapshot_list_restore(PageSnapshotList* list) {
   }
 }
 
+/* Snapshot arena and page state before starting a relocation batch. */
 static bool relocation_rollback_begin(RelocationRollback* rollback, Arena* arena) {
   rollback->page_count = arena->page_count;
   rollback->nursery_active_page = arena->nursery_active_page;
@@ -202,6 +212,7 @@ static bool relocation_rollback_begin(RelocationRollback* rollback, Arena* arena
   return true;
 }
 
+/* Release destination pages appended after a rollback checkpoint. */
 static void relocation_release_appended_pages(Arena* arena, size_t page_count) {
   for (size_t i = page_count; i < arena->page_count; i++) {
     page_release(&arena->pages[i]);
@@ -210,6 +221,7 @@ static void relocation_release_appended_pages(Arena* arena, size_t page_count) {
   arena->page_count = page_count;
 }
 
+/* Restore a failed relocation batch to its checkpointed arena state. */
 static void relocation_rollback_restore(RelocationRollback* rollback, Arena* arena) {
   page_snapshot_list_restore(&rollback->snapshots);
   relocation_release_appended_pages(arena, rollback->page_count);
@@ -219,10 +231,12 @@ static void relocation_rollback_restore(RelocationRollback* rollback, Arena* are
   arena->stats = rollback->stats;
 }
 
+/* Discard rollback snapshots after success or restoration. */
 static void relocation_rollback_reset(RelocationRollback* rollback) {
   page_snapshot_list_reset(&rollback->snapshots);
 }
 
+/* Record one source-offset-to-destination mapping on a relocating page. */
 static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) {
   PageForwardingEntry* entries;
   size_t new_capacity;
@@ -255,6 +269,7 @@ static bool page_add_forwarding(Page* page, size_t old_offset, u8* new_payload) 
   return true;
 }
 
+/* Select nonempty normal pages whose live ratio is at most one quarter. */
 static bool gc_page_is_relocation_candidate(const Page* page) {
   if (page->state != GC_PAGE_ACTIVE && page->state != GC_PAGE_FULL) {
     return false;
@@ -264,6 +279,7 @@ static bool gc_page_is_relocation_candidate(const Page* page) {
       page->livemap.live_bytes <= (page->capacity >> GC_RELOCATION_LIVE_RATIO_SHIFT);
 }
 
+/* Choose a live object's destination space, age, and aligned layout. */
 static RelocationPlan gc_make_relocation_plan(
     Arena* arena,
     Page* source_page,
@@ -295,6 +311,7 @@ static RelocationPlan gc_make_relocation_plan(
   return plan;
 }
 
+/* Acquire an active non-source page for a relocation copy. */
 static Page* gc_acquire_relocation_destination_page(
     Arena* arena,
     size_t min_capacity,
@@ -309,6 +326,7 @@ static Page* gc_acquire_relocation_destination_page(
   return destination_page;
 }
 
+/* Copy one live source object and install its forwarding entry transactionally. */
 static bool gc_forward_live_object(
     Arena* arena,
     Page* source_page,
@@ -381,6 +399,7 @@ static bool gc_forward_live_object(
   return true;
 }
 
+/* Return an object's destination, creating a rollback-safe copy if needed. */
 void* gc_forward_if_relocating(Arena* arena, void* object) {
   Page* source_page;
   const size_t header_size = arena_make_layout(0).header_size;
@@ -431,6 +450,7 @@ void* gc_forward_if_relocating(Arena* arena, void* object) {
   return new_payload;
 }
 
+/* Return a relocating object's existing destination without creating one. */
 void* gc_forward_existing_if_relocating(Arena* arena, void* object) {
   Page* source_page;
   const size_t header_size = arena_make_layout(0).header_size;
@@ -461,6 +481,7 @@ void* gc_forward_existing_if_relocating(Arena* arena, void* object) {
   return entry->new_payload;
 }
 
+/* Copy every marked object from one page into relocation destinations. */
 static bool gc_evacuate_page(
     Arena* arena,
     Page* source_page,
@@ -500,6 +521,7 @@ static bool gc_evacuate_page(
   return true;
 }
 
+/* Verify each forwarding entry's destination size and liveness mark. */
 bool gc_verify_relocation(Arena* arena) {
   const size_t header_size = arena_make_layout(0).header_size;
 
@@ -537,6 +559,7 @@ bool gc_verify_relocation(Arena* arena) {
   return true;
 }
 
+/* Release all relocation sources after pointer repair is complete. */
 void gc_finish_relocation(Arena* arena) {
   for (size_t i = 0; i < arena->page_count; i++) {
     Page* page = &arena->pages[i];
@@ -557,6 +580,7 @@ void gc_finish_relocation(Arena* arena) {
   }
 }
 
+/* Transactionally evacuate every sparse normal page in the heap. */
 bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   (void) roots;
 
@@ -588,6 +612,7 @@ bool gc_evacuate_sparse_pages(Arena* arena, const GCRootSet* roots) {
   return true;
 }
 
+/* Transactionally evacuate live young pages, aging or promoting survivors. */
 bool gc_evacuate_young_pages(Arena* arena, const GCRootSet* roots) {
   RelocationRollback rollback;
 

@@ -51,6 +51,7 @@ typedef struct Page {
   size_t forwarding_capacity;
 } Page;
 
+/* Attach backing memory and initialize a page descriptor. */
 void page_init(
     Page* page,
     u8* base,
@@ -58,9 +59,13 @@ void page_init(
     PageState state,
     PageAge age,
     PageSpace space);
+/* Reinitialize a retained page for a new state, age, and space. */
 void page_reset(Page* page, PageState state, PageAge age, PageSpace space);
+/* Release all forwarding entries owned by a page. */
 void page_clear_forwarding(Page* page);
+/* Reclassify a surviving page as old. */
 void page_promote(Page* page);
+/* Free a page's backing memory and auxiliary metadata. */
 void page_release(Page* page);
 
 #endif

@@ -8,10 +8,12 @@
 #include "macros.h"
 #include "object_header.h"
 
+/* Round a size up to the object alignment. */
 static size_t align_size(size_t size) {
   return ALIGN_UP(size, GC_ALIGNMENT);
 }
 
+/* Align a size without allowing arithmetic overflow. */
 static bool checked_align_size(size_t size, size_t* aligned_size) {
   const size_t alignment_mask = GC_ALIGNMENT - 1u;
 
@@ -28,16 +30,19 @@ static const TraceDescriptor gc_trace_none = {
   .pointer_offsets = NULL,
 };
 
+/* Return a header's byte offset from its owning page base. */
 static size_t get_page_offset(const Page* page, const ObjectHeader* hp) {
   const u8* h_start = (const u8*) hp;
 
   return (size_t) (h_start - (const u8*) page->base);
 }
 
+/* Return the aligned space reserved for every object header. */
 static size_t get_header_size(void) {
   return align_size(sizeof(ObjectHeader));
 }
 
+/* Compute an aligned object layout and reject overflowing sizes. */
 static bool arena_make_layout_checked(size_t payload_size, AllocLayout* alloc_layout) {
   size_t aligned_payload_size;
   size_t unaligned_total_size;
@@ -63,6 +68,7 @@ static bool arena_make_layout_checked(size_t payload_size, AllocLayout* alloc_la
   return true;
 }
 
+/* Compute the header and total allocation sizes for a payload. */
 AllocLayout arena_make_layout(size_t payload_size) {
   AllocLayout alloc_layout;
 
@@ -70,6 +76,7 @@ AllocLayout arena_make_layout(size_t payload_size) {
   return alloc_layout;
 }
 
+/* Verify that every traced pointer slot fits inside the payload. */
 static bool arena_trace_descriptor_is_valid(
     const TraceDescriptor* trace,
     size_t payload_size) {
@@ -92,6 +99,7 @@ static bool arena_trace_descriptor_is_valid(
   return true;
 }
 
+/* Map an allocation space to the age assigned to its pages. */
 static PageAge arena_space_age(PageSpace space) {
   switch (space) {
     case GC_SPACE_NURSERY:
@@ -106,6 +114,7 @@ static PageAge arena_space_age(PageSpace space) {
   }
 }
 
+/* Initialize adaptive collection policy to configured defaults. */
 static void arena_policy_init(ArenaGCPolicy* policy) {
   policy->nursery_page_target = GC_NURSERY_PAGE_TRIGGER;
   policy->max_nursery_pages = GC_MAX_PAGES / 4u;
@@ -116,6 +125,7 @@ static void arena_policy_init(ArenaGCPolicy* policy) {
   policy->full_page_watermark = GC_GC_PAGE_WATERMARK;
 }
 
+/* Append and initialize a newly allocated page in the arena. */
 Page* arena_add_page(
     Arena* arena,
     size_t capacity,
@@ -140,6 +150,7 @@ Page* arena_add_page(
   return page;
 }
 
+/* Return the arena cursor that owns allocations for a normal space. */
 static Page** arena_active_page_slot(Arena* arena, PageSpace space) {
   switch (space) {
     case GC_SPACE_NURSERY:
@@ -157,6 +168,7 @@ static Page** arena_active_page_slot(Arena* arena, PageSpace space) {
   }
 }
 
+/* Find, reuse, or create an active normal page with enough free space. */
 Page* arena_get_active_page_for_space(Arena* arena, size_t size, PageSpace space) {
   Page** active_page = arena_active_page_slot(arena, space);
   const PageAge age = arena_space_age(space);
@@ -199,6 +211,7 @@ Page* arena_get_active_page_for_space(Arena* arena, size_t size, PageSpace space
   return page;
 }
 
+/* Select the nursery or old active page implied by an age. */
 Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age) {
   return arena_get_active_page_for_space(
       arena,
@@ -206,11 +219,13 @@ Page* arena_get_active_page_for_age(Arena* arena, size_t size, PageAge age) {
       age == GC_PAGE_AGE_OLD ? GC_SPACE_OLD : GC_SPACE_NURSERY);
 }
 
+/* Initialize an empty arena and its default collection policy. */
 void arena_init(Arena* arena) {
   memset(arena, 0, sizeof(*arena));
   arena_policy_init(&arena->policy);
 }
 
+/* Release all arena-owned pages, roots, and collection state. */
 void arena_destroy(Arena* arena) {
   size_t i;
 
@@ -230,6 +245,7 @@ void arena_destroy(Arena* arena) {
   arena_policy_init(&arena->policy);
 }
 
+/* Allocate one object in a dedicated or reusable large page. */
 static void* arena_alloc_large(
     Arena* arena,
     const ObjectHeader* header,
@@ -274,6 +290,7 @@ static void* arena_alloc_large(
   return (void*) (top + alloc_layout->header_size);
 }
 
+/* Bump-allocate one object in a normal page for the requested space. */
 static void* arena_alloc_normal(
     Arena* arena,
     const ObjectHeader* header,
@@ -301,6 +318,7 @@ static void* arena_alloc_normal(
   return (void*) (top + alloc_layout->header_size);
 }
 
+/* Validate metadata and allocate an object directly in a chosen space. */
 void* arena_alloc_traced_in_space(
     Arena* arena,
     size_t payload_size,
@@ -337,14 +355,17 @@ void* arena_alloc_traced_in_space(
   return arena_alloc_normal(arena, &header, &alloc_layout, space);
 }
 
+/* Allocate an exactly traced object directly in nursery space. */
 void* arena_alloc_traced(Arena* arena, size_t payload_size, const TraceDescriptor* trace) {
   return arena_alloc_traced_in_space(arena, payload_size, trace, GC_SPACE_NURSERY);
 }
 
+/* Allocate a pointer-free object directly in nursery space. */
 void* arena_alloc(Arena* arena, size_t payload_size) {
   return arena_alloc_traced(arena, payload_size, &gc_trace_none);
 }
 
+/* Choose the collection required by page and nursery pressure. */
 ArenaCollectionTrigger arena_collection_trigger(const Arena* arena) {
   size_t nursery_pages = 0;
 
@@ -367,18 +388,22 @@ ArenaCollectionTrigger arena_collection_trigger(const Arena* arena) {
   return GC_TRIGGER_NONE;
 }
 
+/* Report whether current allocation pressure requests any collection. */
 bool arena_should_collect(const Arena* arena) {
   return arena_collection_trigger(arena) != GC_TRIGGER_NONE;
 }
 
+/* Expose the arena's current read-only collection policy. */
 const ArenaGCPolicy* gc_policy(const Arena* arena) {
   return &arena->policy;
 }
 
+/* Expose the arena's current read-only collection statistics. */
 const ArenaGCStats* gc_stats(const Arena* arena) {
   return &arena->stats;
 }
 
+/* Find the non-free page containing an object's header. */
 Page* arena_find_page(Arena* arena, const void* payload_pointer) {
   const size_t header_size = get_header_size();
   const u8* hp = (const u8*) get_header_pointer(payload_pointer, header_size);
@@ -399,6 +424,7 @@ Page* arena_find_page(Arena* arena, const void* payload_pointer) {
   return NULL;
 }
 
+/* Mark an object live and report whether this is its first mark. */
 bool arena_mark_object(Arena* arena, const void* payload_pointer) {
   const size_t header_size = get_header_size();
   Page* page = arena_find_page(arena, payload_pointer);
@@ -412,6 +438,7 @@ bool arena_mark_object(Arena* arena, const void* payload_pointer) {
   return livemap_mark(&page->livemap, page_offset, hp->total_size);
 }
 
+/* Visit each pointer slot described by an object's trace metadata. */
 bool arena_visit_object_fields(
     Arena* arena,
     void* payload_pointer,
@@ -449,6 +476,7 @@ bool arena_visit_object_fields(
   return true;
 }
 
+/* Mark a non-NULL pointer field without recursively tracing it. */
 static bool arena_mark_field_visitor(
     const ObjectHeader* header,
     void* payload,
@@ -466,6 +494,7 @@ static bool arena_mark_field_visitor(
   return true;
 }
 
+/* Mark every directly referenced object in a traced payload. */
 void arena_mark_object_fields(Arena* arena, void* payload_pointer) {
   (void) arena_visit_object_fields(
       arena,
@@ -474,6 +503,7 @@ void arena_mark_object_fields(Arena* arena, void* payload_pointer) {
       arena);
 }
 
+/* Walk every allocated object in page and allocation order. */
 void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_data) {
   const size_t header_size = get_header_size();
 
@@ -494,6 +524,7 @@ void arena_for_each_object(Arena* arena, ArenaObjectVisitor visitor, void* user_
   }
 }
 
+/* Recompute live-byte totals from all non-free, non-source pages. */
 void arena_stats_recompute_live(Arena* arena) {
   for (size_t i = 0; i <= (size_t) GC_SPACE_LARGE; i++) {
     arena->stats.live_bytes[i] = 0;
@@ -510,6 +541,7 @@ void arena_stats_recompute_live(Arena* arena) {
   }
 }
 
+/* Recover an object's header address from its public payload pointer. */
 const ObjectHeader* get_header_pointer(const void* payload_pointer, size_t header_size) {
   return (const ObjectHeader*) ((const u8*) payload_pointer - header_size);
 }
